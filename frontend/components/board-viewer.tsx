@@ -2,7 +2,17 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useBoardEvents } from '../hooks/use-board-events';
-import type { BoardEventPayload, BoardFeedResponse, BoardPost, BoardSummary } from '@board-app/shared';
+import type {
+  BoardAlias,
+  BoardEventPayload,
+  BoardFeedResponse,
+  BoardPost,
+  BoardSummary,
+  GetAliasResponse,
+  RegisterIdentityResponse,
+  UpsertAliasResponse,
+  UpdateReactionResponse
+} from '@board-app/shared';
 
 interface BoardViewerProps {
   boardId: string;
@@ -15,6 +25,52 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [posts, setPosts] = useState<BoardPost[]>([]);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [feedLoading, setFeedLoading] = useState<boolean>(true);
+  const [identity, setIdentity] = useState<RegisterIdentityResponse['user'] | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [identityLoading, setIdentityLoading] = useState<boolean>(false);
+  const [reactionUserId, setReactionUserId] = useState('');
+  const [reactionPostId, setReactionPostId] = useState('');
+  const [reactionStatus, setReactionStatus] = useState<string | null>(null);
+  const [reactionLoading, setReactionLoading] = useState<boolean>(false);
+  const [alias, setAlias] = useState<BoardAlias | null>(null);
+  const [aliasStatus, setAliasStatus] = useState<string | null>(null);
+  const [aliasError, setAliasError] = useState<string | null>(null);
+  const [aliasLoading, setAliasLoading] = useState<boolean>(false);
+  const [aliasInput, setAliasInput] = useState('');
+
+  useEffect(() => {
+    setAliasStatus(null);
+    setAliasError(null);
+  }, [identity?.id, boardId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = window.localStorage.getItem('boardapp:identity');
+      if (stored) {
+        const parsed = JSON.parse(stored) as RegisterIdentityResponse['user'];
+        if (!identity) {
+          setIdentity(parsed);
+          setReactionUserId(parsed.id);
+        }
+      }
+    } catch (error) {
+      console.warn('[ui] failed to read stored identity', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (identity) {
+        window.localStorage.setItem('boardapp:identity', JSON.stringify(identity));
+      } else {
+        window.localStorage.removeItem('boardapp:identity');
+      }
+    } catch (error) {
+      console.warn('[ui] failed to persist identity', error);
+    }
+  }, [identity]);
 
   const statusLabel = useMemo(() => {
     if (status === 'connected') return 'Live';
@@ -74,6 +130,96 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   }, [fetchFeed]);
 
   useEffect(() => {
+    if (identity) {
+      setReactionUserId(identity.id);
+    }
+  }, [identity]);
+
+  useEffect(() => {
+    if (!identity) {
+      setAlias(null);
+      setAliasInput('');
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = window.localStorage.getItem(`boardapp:alias:${boardId}`);
+        if (stored) {
+          const parsed = JSON.parse(stored) as BoardAlias;
+          if (parsed.userId === identity.id) {
+            setAlias(parsed);
+          }
+        }
+      } catch (error) {
+        console.warn('[ui] failed to read stored alias', error);
+      }
+    }
+
+    let cancelled = false;
+    async function fetchAlias() {
+      try {
+        const res = await fetch(
+          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases?userId=${encodeURIComponent(identity.id)}`
+        );
+        if (!res.ok) {
+          throw new Error(`Failed to load alias (${res.status})`);
+        }
+        const body: GetAliasResponse = await res.json();
+        if (!cancelled) {
+          const nextAlias = body.alias ?? null;
+          setAlias(nextAlias);
+          if (!nextAlias) {
+            setAliasInput('');
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[ui] failed to fetch alias', error);
+          setAlias(null);
+        }
+      }
+    }
+
+    fetchAlias();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, boardId, workerBaseUrl]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!identity || !alias) {
+      window.localStorage.removeItem(`boardapp:alias:${boardId}`);
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(`boardapp:alias:${boardId}`, JSON.stringify(alias));
+    } catch (error) {
+      console.warn('[ui] failed to persist alias', error);
+    }
+  }, [alias, boardId, identity]);
+
+  useEffect(() => {
+    if (alias?.alias) {
+      setAliasInput(alias.alias);
+    }
+  }, [alias]);
+
+  useEffect(() => {
+    if (posts.length === 0) {
+      setReactionPostId('');
+      return;
+    }
+
+    if (!reactionPostId || !posts.some(post => post.id === reactionPostId)) {
+      setReactionPostId(posts[0].id);
+    }
+  }, [posts, reactionPostId]);
+
+  useEffect(() => {
     const latest = events.at(-1);
     if (!latest) return;
     if (latest.event === 'post.created' && latest.data) {
@@ -83,8 +229,164 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         if (exists) return prev;
         return [payload, ...prev].slice(0, 20);
       });
+      return;
+    }
+    if (latest.event === 'post.reacted' && latest.data) {
+      const payload = latest.data as {
+        postId?: string;
+        reactions?: { total: number; likeCount: number; dislikeCount: number };
+      };
+      if (!payload?.postId || !payload?.reactions) return;
+      setPosts(prev =>
+        prev.map(post => {
+          if (post.id !== payload.postId) return post;
+          return {
+            ...post,
+            reactionCount: payload.reactions.total,
+            likeCount: payload.reactions.likeCount,
+            dislikeCount: payload.reactions.dislikeCount
+          };
+        })
+      );
+      setReactionStatus(
+        `Realtime update • Post ${payload.postId}: 👍 ${payload.reactions.likeCount} / 👎 ${payload.reactions.dislikeCount}`
+      );
     }
   }, [events]);
+
+  async function handleRegisterIdentity(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const pseudonym = (formData.get('pseudonym') as string)?.trim();
+
+    if (!pseudonym) {
+      setIdentityError('Pseudonym is required.');
+      return;
+    }
+
+    setIdentityLoading(true);
+    setIdentityError(null);
+
+    try {
+      const res = await fetch(`${workerBaseUrl}/identity/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pseudonym })
+      });
+
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(payload?.error ?? `Failed to register identity (${res.status})`);
+      }
+
+      const body = payload as RegisterIdentityResponse;
+      setIdentity(body.user);
+      form.reset();
+    } catch (error) {
+      setIdentityError((error as Error).message ?? 'Failed to register identity');
+    } finally {
+      setIdentityLoading(false);
+    }
+  }
+
+  async function handleSendReaction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const action = (formData.get('reactionAction') as string)?.trim();
+    const explicitUserId = (formData.get('reactionUserId') as string)?.trim();
+    const userId = explicitUserId || identity?.id || reactionUserId;
+
+    if (!reactionPostId) {
+      setReactionStatus('Select a post to react to.');
+      return;
+    }
+
+    if (!userId) {
+      setReactionStatus('Provide a user ID or register an identity first.');
+      return;
+    }
+
+    if (!action) {
+      setReactionStatus('Choose a reaction action.');
+      return;
+    }
+
+    setReactionLoading(true);
+    setReactionStatus(null);
+
+    try {
+      const res = await fetch(
+        `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(reactionPostId)}/reactions`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ userId, action })
+        }
+      );
+
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(payload?.error ?? `Failed to update reaction (${res.status})`);
+      }
+
+      const body = payload as UpdateReactionResponse;
+      setReactionStatus(
+        `Acknowledged • Post ${body.postId}: 👍 ${body.reactions.likeCount} / 👎 ${body.reactions.dislikeCount}`
+      );
+    } catch (error) {
+      setReactionStatus((error as Error).message ?? 'Failed to send reaction');
+    } finally {
+      setReactionLoading(false);
+    }
+  }
+
+  async function handleUpsertAlias(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const aliasValue = (formData.get('boardAlias') as string)?.trim();
+
+    if (!identity) {
+      setAliasError('Register an identity first.');
+      return;
+    }
+
+    if (!aliasValue) {
+      setAliasError('Alias cannot be empty.');
+      return;
+    }
+
+    setAliasLoading(true);
+    setAliasError(null);
+    setAliasStatus(null);
+
+    try {
+      const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases`, {
+        method: alias ? 'PUT' : 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ userId: identity.id, alias: aliasValue })
+      });
+
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(payload?.error ?? `Failed to update alias (${res.status})`);
+      }
+
+      const body = payload as UpsertAliasResponse;
+      setAlias(body.alias);
+      setAliasInput(body.alias.alias);
+      setAliasStatus(`Alias set to “${body.alias.alias}”.`);
+    } catch (error) {
+      setAliasError((error as Error).message ?? 'Failed to update alias');
+    } finally {
+      setAliasLoading(false);
+    }
+  }
 
   async function handleInject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -124,10 +426,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     }
 
     try {
+      const resolvedAuthor = author || alias?.alias || identity?.pseudonym || undefined;
       const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ body, author: author || undefined })
+        body: JSON.stringify({ body, author: resolvedAuthor, userId: identity?.id || undefined })
       });
       if (!res.ok) {
         throw new Error(`Failed to create post (${res.status})`);
@@ -166,6 +469,88 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         )}
 
         <section className="mt-10">
+          <form onSubmit={handleRegisterIdentity} className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Register Identity</h2>
+            <p className="mt-2 text-xs text-slate-500">
+              Identities map to pseudonyms used across boards. Reactions require a user ID.
+            </p>
+            <div className="mt-4 flex flex-wrap items-end gap-4">
+              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Pseudonym
+                <input
+                  name="pseudonym"
+                  placeholder="e.g. CampusScout"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  required
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={identityLoading}
+                className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {identityLoading ? 'Registering…' : 'Register'}
+              </button>
+            </div>
+            {identity && (
+              <p className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
+                Active identity: <span className="font-semibold text-slate-200">{identity.pseudonym}</span>{' '}
+                <code className="ml-1 rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-300">{identity.id}</code>
+              </p>
+            )}
+            {identityError && (
+              <p className="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{identityError}</p>
+            )}
+          </form>
+
+          <form
+            onSubmit={handleUpsertAlias}
+            className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30"
+          >
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Set Board Alias</h2>
+            <p className="mt-2 text-xs text-slate-500">
+              Aliases display only within this board. They override your global pseudonym.
+            </p>
+            <div className="mt-4 flex flex-wrap items-end gap-4">
+              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Alias
+                <input
+                  name="boardAlias"
+                  value={aliasInput}
+                  onChange={event => {
+                    setAliasInput(event.target.value);
+                    setAliasStatus(null);
+                    setAliasError(null);
+                  }}
+                  placeholder="e.g. LibraryLookout"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  disabled={!identity}
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={!identity || aliasLoading}
+                className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {!identity ? 'Register identity first' : aliasLoading ? 'Saving…' : alias ? 'Update Alias' : 'Save Alias'}
+              </button>
+            </div>
+            {alias && (
+              <p className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
+                Current alias: <span className="font-semibold text-slate-200">{alias.alias}</span>
+                {alias.aliasNormalized && (
+                  <code className="ml-2 rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-300">{alias.aliasNormalized}</code>
+                )}
+              </p>
+            )}
+            {aliasStatus && (
+              <p className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-emerald-300/80">{aliasStatus}</p>
+            )}
+            {aliasError && (
+              <p className="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{aliasError}</p>
+            )}
+          </form>
+
           <form onSubmit={handleCreatePost} className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
             <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Create Test Post</h2>
             <div className="mt-4 flex flex-wrap gap-4">
@@ -217,10 +602,73 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                   </time>
                 </header>
                 <p className="mt-3 text-sm text-slate-100">{post.body}</p>
-                <footer className="mt-3 text-xs text-slate-500">Reactions: {post.reactionCount}</footer>
+                <footer className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-500">
+                  <span>👍 {post.likeCount}</span>
+                  <span>👎 {post.dislikeCount}</span>
+                  <span>Total {post.reactionCount}</span>
+                </footer>
               </article>
             ))}
           </div>
+
+          <form onSubmit={handleSendReaction} className="mt-8 mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Send Test Reaction</h2>
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Post
+                <select
+                  name="reactionPostId"
+                  value={reactionPostId}
+                  onChange={event => setReactionPostId(event.target.value)}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  disabled={posts.length === 0}
+                >
+                  {posts.map(post => (
+                    <option key={post.id} value={post.id}>
+                      {post.body.slice(0, 40)}
+                      {post.body.length > 40 ? '…' : ''}
+                    </option>
+                  ))}
+                  {posts.length === 0 && <option value="">No posts</option>}
+                </select>
+              </label>
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                User ID
+                <input
+                  name="reactionUserId"
+                  value={reactionUserId}
+                  onChange={event => setReactionUserId(event.target.value)}
+                  placeholder="Copy from identity"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  required
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Action
+                <select
+                  name="reactionAction"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  defaultValue="like"
+                >
+                  <option value="like">Like</option>
+                  <option value="dislike">Dislike</option>
+                  <option value="remove">Remove</option>
+                </select>
+              </label>
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="submit"
+                disabled={reactionLoading || !reactionPostId}
+                className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {reactionLoading ? 'Sending…' : 'Send Reaction'}
+              </button>
+              {reactionStatus && (
+                <p className="text-xs text-slate-400">{reactionStatus}</p>
+              )}
+            </div>
+          </form>
 
           <form onSubmit={handleInject} className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
             <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Inject Test Event</h2>

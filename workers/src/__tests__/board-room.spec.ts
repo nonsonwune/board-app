@@ -121,6 +121,8 @@ describe('BoardRoom', () => {
 
     socketA.emitMessage({ type: 'broadcast', event: 'note', data: { body: 'hello' } });
 
+    await new Promise(resolve => setTimeout(resolve, 0));
+
     expect(socketB.sent).toHaveLength(1);
     const payload = JSON.parse(socketB.sent[0]);
     expect(payload).toMatchObject({ type: 'event', event: 'note', data: { body: 'hello' } });
@@ -145,6 +147,8 @@ describe('BoardRoom', () => {
     expect(room.getConnectionCount()).toBe(1);
 
     socket.emitMessage({ type: 'broadcast', event: 'self', data: { ok: true }, echoSelf: true });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     expect(socket.sent).toHaveLength(1);
     const payload = JSON.parse(socket.sent[0]);

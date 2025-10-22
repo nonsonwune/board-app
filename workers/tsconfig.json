@@ -8,7 +8,12 @@
     "strict": true,
     "noEmit": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@board-app/shared": ["../packages/shared/src/index.ts"],
+      "@board-app/shared/*": ["../packages/shared/src/*"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

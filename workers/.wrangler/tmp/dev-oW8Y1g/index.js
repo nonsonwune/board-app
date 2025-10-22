@@ -2,6 +2,7 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // dist/index.js
+var schema_default = "CREATE TABLE IF NOT EXISTS boards (\n  id TEXT PRIMARY KEY,\n  display_name TEXT NOT NULL,\n  description TEXT,\n  created_at INTEGER NOT NULL\n);\nCREATE TABLE IF NOT EXISTS posts (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n  author TEXT,\n  body TEXT NOT NULL,\n  created_at INTEGER NOT NULL,\n  reaction_count INTEGER NOT NULL DEFAULT 0\n);\nCREATE INDEX IF NOT EXISTS posts_board_created_at_idx ON posts (board_id, created_at DESC);\nCREATE TABLE IF NOT EXISTS board_events (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  payload TEXT NOT NULL,\n  trace_id TEXT NOT NULL,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS board_events_board_created_at_idx ON board_events (board_id, created_at DESC);\n";
 var BoardRoom = class {
   static {
     __name(this, "BoardRoom");
@@ -49,10 +50,19 @@ var BoardRoom = class {
       if (connectionId === excludeConnectionId) {
         continue;
       }
-      this.send(entry.socket, {
+      const payload = {
         boardId: entry.metadata.boardId,
         ...message
-      });
+      };
+      const serialized = JSON.stringify(payload);
+      setTimeout(() => {
+        try {
+          entry.socket.send(serialized);
+        } catch (error) {
+          console.warn(`[board-room:${this.boardId}] broadcast failed`, error);
+          this.disconnect(connectionId, 1011, "broadcast failure");
+        }
+      }, 0);
     }
   }
   onMessage(connectionId, event) {
@@ -163,41 +173,59 @@ var BoardRoom = class {
     return null;
   }
 };
-var schema_default = "CREATE TABLE IF NOT EXISTS boards (\n  id TEXT PRIMARY KEY,\n  display_name TEXT NOT NULL,\n  description TEXT,\n  created_at INTEGER NOT NULL\n);\nCREATE TABLE IF NOT EXISTS posts (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n  author TEXT,\n  body TEXT NOT NULL,\n  created_at INTEGER NOT NULL,\n  reaction_count INTEGER NOT NULL DEFAULT 0\n);\nCREATE INDEX IF NOT EXISTS posts_board_created_at_idx ON posts (board_id, created_at DESC);\nCREATE TABLE IF NOT EXISTS board_events (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  payload TEXT NOT NULL,\n  trace_id TEXT NOT NULL,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS board_events_board_created_at_idx ON board_events (board_id, created_at DESC);\n";
 var ALLOWED_ORIGINS = ["http://localhost:3000"];
 var boardRooms = /* @__PURE__ */ new Map();
 var schemaInitialized = false;
+var schemaInitPromise = null;
 function allowOrigin(origin) {
   if (!origin) return "*";
   return ALLOWED_ORIGINS.includes(origin) ? origin : "*";
 }
 __name(allowOrigin, "allowOrigin");
-function withCors(req, res) {
-  const origin = allowOrigin(req.headers.get("Origin"));
-  const headers = new Headers(res.headers);
+function withCors(request, response) {
+  const origin = allowOrigin(request.headers.get("Origin"));
+  const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", origin);
   headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
   headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   headers.set("Vary", "Origin");
-  return new Response(res.body, {
-    status: res.status,
-    statusText: res.statusText,
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
     headers
   });
 }
 __name(withCors, "withCors");
 function __resetSchemaForTests() {
   schemaInitialized = false;
+  schemaInitPromise = null;
 }
 __name(__resetSchemaForTests, "__resetSchemaForTests");
 async function ensureSchema(env) {
   if (schemaInitialized) return;
-  const statements = schema_default.split(";").map((stmt) => stmt.trim()).filter(Boolean).map((stmt) => `${stmt};`);
-  for (const sql of statements) {
-    console.log("[schema] exec", sql);
-    await env.BOARD_DB.exec(sql);
+  if (!schemaInitPromise) {
+    schemaInitPromise = (async () => {
+      const cleaned = schema_default.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--.*$/gm, "").trim();
+      if (!cleaned) {
+        throw new Error("schema.sql is empty after stripping comments");
+      }
+      const statements = cleaned.split(/;\s*(?:\r?\n|$)/).map((statement) => statement.trim()).filter(Boolean).map((statement) => statement.endsWith(";") ? statement : `${statement};`);
+      if (statements.length === 0) {
+        throw new Error("schema.sql is empty after processing");
+      }
+      for (const sql of statements) {
+        try {
+          await env.BOARD_DB.prepare(sql).run();
+        } catch (error) {
+          console.error("[schema] failed to apply statement", sql);
+          throw error;
+        }
+      }
+      schemaInitialized = true;
+      console.log("[schema] ready");
+    })();
   }
-  schemaInitialized = true;
+  await schemaInitPromise;
 }
 __name(ensureSchema, "ensureSchema");
 function getBoardRoom(boardId) {
@@ -284,11 +312,11 @@ __name(listPosts, "listPosts");
 var index_default = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === "/_health") {
-      return new Response("ok", { status: 200 });
-    }
     if (request.method === "OPTIONS") {
       return withCors(request, new Response(null, { status: 204 }));
+    }
+    if (url.pathname === "/_health") {
+      return new Response("ok", { status: 200 });
     }
     try {
       const upgradeHeader = request.headers.get("Upgrade");
@@ -544,6 +572,8 @@ function formatBoardName(boardId) {
   return cleaned.split(" ").filter(Boolean).map((word) => word[0]?.toUpperCase() + word.slice(1)).join(" ");
 }
 __name(formatBoardName, "formatBoardName");
+var EVENTS_STORAGE_KEY = "board-events";
+var MAX_PERSISTED_EVENTS = 100;
 var BoardRoomDO = class {
   static {
     __name(this, "BoardRoomDO");
@@ -562,6 +592,15 @@ var BoardRoomDO = class {
     const url = new URL(request.url);
     const boardId = request.headers.get("CF-Board-ID") ?? this.state.id.toString();
     const traceId = request.headers.get("CF-Trace-ID") ?? crypto.randomUUID();
+    if (request.headers.get("Upgrade") === "websocket" && (url.pathname === "/connect" || url.pathname === "/boards")) {
+      const socket = request.webSocket;
+      if (!socket) {
+        return new Response("Expected WebSocket upgrade.", { status: 400 });
+      }
+      const closePromise = this.handleDurableSocket(socket, boardId, traceId);
+      this.state.waitUntil(closePromise);
+      return new Response(null, { status: 101, webSocket: socket });
+    }
     if (request.method === "POST" && url.pathname === "/broadcast") {
       let payload;
       try {
@@ -612,6 +651,55 @@ var BoardRoomDO = class {
       headers: { "Content-Type": "application/json" }
     });
   }
+  handleDurableSocket(socket, boardId, traceId) {
+    socket.accept();
+    const keepAlive = setInterval(() => {
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "keepalive",
+            boardId,
+            timestamp: Date.now()
+          })
+        );
+      } catch {
+        clearInterval(keepAlive);
+      }
+    }, 3e4);
+    const close = /* @__PURE__ */ __name(() => {
+      clearInterval(keepAlive);
+    }, "close");
+    socket.addEventListener("close", close);
+    socket.addEventListener("error", close);
+    socket.send(
+      JSON.stringify({
+        type: "ack",
+        boardId,
+        connectionId: crypto.randomUUID(),
+        trace_id: traceId,
+        timestamp: Date.now()
+      })
+    );
+    socket.addEventListener("message", (event) => {
+      try {
+        const payload = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+        if (payload?.type === "ping") {
+          socket.send(
+            JSON.stringify({
+              type: "pong",
+              boardId,
+              timestamp: Date.now()
+            })
+          );
+        }
+      } catch (err) {
+        console.warn("[board-room] message parse failed", err);
+      }
+    });
+    return new Promise((resolve) => {
+      socket.addEventListener("close", () => resolve(), { once: true });
+    });
+  }
   async appendEvent(record) {
     this.events.push(record);
     if (this.events.length > MAX_PERSISTED_EVENTS) {
@@ -620,8 +708,6 @@ var BoardRoomDO = class {
     await this.state.storage.put(EVENTS_STORAGE_KEY, this.events);
   }
 };
-var EVENTS_STORAGE_KEY = "board-events";
-var MAX_PERSISTED_EVENTS = 100;
 
 // ../node_modules/.pnpm/wrangler@4.44.0_@cloudflare+workers-types@4.20251014.0/node_modules/wrangler/templates/middleware/middleware-ensure-req-body-drained.ts
 var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx) => {
@@ -664,7 +750,7 @@ var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "jsonError");
 var middleware_miniflare3_json_error_default = jsonError;
 
-// .wrangler/tmp/bundle-a05v49/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-DQkItX/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default,
   middleware_miniflare3_json_error_default
@@ -696,7 +782,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-a05v49/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-DQkItX/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;
@@ -796,6 +882,11 @@ export {
   BoardRoomDO,
   __INTERNAL_WRANGLER_MIDDLEWARE__,
   __resetSchemaForTests,
-  middleware_loader_entry_default as default
+  createPost,
+  middleware_loader_entry_default as default,
+  ensureSchema,
+  getOrCreateBoard,
+  listPosts,
+  persistEvent
 };
 //# sourceMappingURL=index.js.map

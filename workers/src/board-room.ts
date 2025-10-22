@@ -14,15 +14,16 @@ type Listener<T> = (event: T) => void;
 type MessageEventLike = { data: string | ArrayBuffer | ArrayBufferView };
 type CloseEventLike = { code?: number; reason?: string };
 type ErrorEventLike = { error: unknown };
+type ListenerOptions = { once?: boolean };
 
 export interface BoardWebSocket {
   readonly readyState: number;
   accept(): void;
   send(data: string): void;
   close(code?: number, reason?: string): void;
-  addEventListener(type: 'message', listener: Listener<MessageEventLike>): void;
-  addEventListener(type: 'close', listener: Listener<CloseEventLike>): void;
-  addEventListener(type: 'error', listener: Listener<ErrorEventLike>): void;
+  addEventListener(type: 'message', listener: Listener<MessageEventLike>, options?: ListenerOptions): void;
+  addEventListener(type: 'close', listener: Listener<CloseEventLike>, options?: ListenerOptions): void;
+  addEventListener(type: 'error', listener: Listener<ErrorEventLike>, options?: ListenerOptions): void;
 }
 
 type ConnectionEntry = {
@@ -89,10 +90,21 @@ export class BoardRoom {
       if (connectionId === excludeConnectionId) {
         continue;
       }
-      this.send(entry.socket, {
+
+      const payload = {
         boardId: entry.metadata.boardId,
         ...message
-      });
+      };
+      const serialized = JSON.stringify(payload);
+
+      setTimeout(() => {
+        try {
+          entry.socket.send(serialized);
+        } catch (error) {
+          console.warn(`[board-room:${this.boardId}] broadcast failed`, error);
+          this.disconnect(connectionId, 1011, 'broadcast failure');
+        }
+      }, 0);
     }
   }
 

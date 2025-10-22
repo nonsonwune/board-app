@@ -5,6 +5,11 @@ compatibility_date = "2024-10-01"
 [build]
 command = "pnpm --filter @board-app/workers build"
 
+[[rules]]
+globs = ["**/*.sql"]
+type = "Text"
+fallthrough = false
+
 [dev]
 port = 8788
 

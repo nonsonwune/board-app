@@ -1,5 +1,6 @@
 export type EventType =
   | 'post.created'
+  | 'post.reacted'
   | 'note'
   | 'message'
   | 'ping'
