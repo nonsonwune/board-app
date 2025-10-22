@@ -1,0 +1,19 @@
+{
+  "name": "board-app",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @board-app/frontend dev",
+    "worker:dev": "pnpm --filter @board-app/workers dev",
+    "lint": "pnpm run --recursive lint",
+    "test": "pnpm run --recursive test --if-present",
+    "lint:fix": "pnpm run --recursive lint --if-present -- --fix",
+    "smoke:ws": "tsx scripts/ws-smoke-test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.1",
+    "ws": "^8.18.0",
+    "@board-app/shared": "workspace:*"
+  }
+}

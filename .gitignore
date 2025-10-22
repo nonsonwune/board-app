@@ -1,0 +1,79 @@
+# Dependencies
+**/node_modules
+.pnp
+.pnp.js
+
+# Build outputs
+**/.next
+**/out
+**/dist
+**/build
+
+# Testing
+**/coverage
+**/__snapshots__
+
+# Environment variables
+.env*.local
+.env
+.env.*.local
+!.env.example
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# Node.js
+.npm
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Cache directories
+.cache
+.parcel-cache
+.eslintcache
+.next
+
+# TypeScript
+*.tsbuildinfo
+
+# Workspace specific
+packages/*/lib
+packages/*/dist
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Turbo
+.turbo
+
+# Local development
+*.local
+
+# Yarn
+.pnp.*
+.yarn-integrity
+
+# Monorepo specific
+lerna-debug.log

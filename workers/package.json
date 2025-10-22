@@ -1,0 +1,27 @@
+{
+  "name": "@board-app/workers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm run build && node ./scripts/run-wrangler-dev.mjs",
+    "build": "node ./build.mjs",
+    "dev:raw": "wrangler dev --config wrangler.toml",
+    "kill-port": "node ./scripts/kill-worker-port.mjs",
+    "lint": "eslint",
+    "test": "vitest --config vitest.config.ts --passWithNoTests"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241112.0",
+    "@esbuild-plugins/node-modules-polyfill": "^0.2.2",
+    "@typescript-eslint/eslint-plugin": "^8.14.0",
+    "@typescript-eslint/parser": "^8.14.0",
+    "esbuild": "^0.25.11",
+    "eslint": "^9.38.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9",
+    "wrangler": "^4.44.0"
+  },
+  "dependencies": {
+    "@board-app/shared": "workspace:*"
+  }
+}

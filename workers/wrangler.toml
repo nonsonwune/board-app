@@ -1,0 +1,23 @@
+name = "board-app-workers"
+main = "dist/index.js"
+compatibility_date = "2024-10-01"
+
+[build]
+command = "pnpm --filter @board-app/workers build"
+
+[dev]
+port = 8788
+
+[durable_objects]
+bindings = [
+  { name = "BOARD_ROOM_DO", class_name = "BoardRoomDO" }
+]
+
+[[migrations]]
+tag = "v0"
+new_classes = ["BoardRoomDO"]
+
+[[d1_databases]]
+binding = "BOARD_DB"
+database_name = "board-db"
+database_id = "local-board-db"

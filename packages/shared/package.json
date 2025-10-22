@@ -1,0 +1,14 @@
+{
+  "name": "@board-app/shared",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint",
+    "test": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
