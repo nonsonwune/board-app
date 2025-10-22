@@ -264,11 +264,14 @@ describe('storage helpers', () => {
     const board = await getOrCreateBoard(env, 'demo-board');
     const user = await createUser(env, 'Alice', 'alice');
     const alias = await upsertBoardAlias(env, board.id, user.id, 'Watcher', 'watcher');
-    const post = await createPost(env, board.id, 'Hello world', alias.alias, user.id);
+    const post = await createPost(env, board.id, 'Hello world', alias.alias, user.id, alias.alias, user.pseudonym);
     expect(post.body).toBe('Hello world');
-    expect(post.author).toBe('Watcher');
+    expect(post.alias).toBe('Watcher');
+    expect(post.pseudonym).toBe('Alice');
     const posts = await listPosts(env, board.id, 10);
     expect(posts).toHaveLength(1);
+    expect(posts[0].alias).toBe('Watcher');
+    expect(posts[0].pseudonym).toBe('Alice');
     expect(posts[0].author).toBe('Watcher');
     expect(posts[0].userId).toBe(user.id);
     expect(posts[0].likeCount).toBe(0);
