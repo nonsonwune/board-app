@@ -307,19 +307,21 @@ async function getOrCreateBoard(env, boardId) {
   };
 }
 __name(getOrCreateBoard, "getOrCreateBoard");
-async function createPost(env, boardId, body, author, userId) {
+async function createPost(env, boardId, body, author, userId, alias, pseudonym) {
   await ensureSchema(env);
   const id = crypto.randomUUID();
   const createdAt = Date.now();
   await env.BOARD_DB.prepare(
     `INSERT INTO posts (id, board_id, user_id, author, body, created_at, reaction_count, like_count, dislike_count)
-       VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0)`
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 0)`
   ).bind(id, boardId, userId ?? null, author ?? null, body, createdAt).run();
   return {
     id,
     boardId,
     userId: userId ?? null,
     author: author ?? null,
+    alias: alias ?? author ?? null,
+    pseudonym: pseudonym ?? null,
     body,
     createdAt,
     reactionCount: 0,
@@ -358,6 +360,8 @@ async function listPosts(env, boardId, limit) {
     boardId: row.board_id,
     userId: row.user_id ?? null,
     author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
+    alias: row.board_alias ?? row.author ?? null,
+    pseudonym: row.pseudonym ?? null,
     body: row.body,
     createdAt: row.created_at,
     reactionCount: row.reaction_count,
@@ -688,6 +692,7 @@ async function handleCreatePost(request, env, ctx, url) {
   const userId = payload.userId?.trim() || null;
   let author = authorInput;
   let user = null;
+  let aliasRecord = null;
   if (userId) {
     user = await getUserById(env, userId);
     if (!user) {
@@ -696,11 +701,19 @@ async function handleCreatePost(request, env, ctx, url) {
         headers: { "Content-Type": "application/json" }
       });
     }
-    const alias = await getBoardAlias(env, boardId, userId);
-    author = alias?.alias ?? author ?? user.pseudonym;
+    aliasRecord = await getBoardAlias(env, boardId, userId);
+    author = aliasRecord?.alias ?? author ?? user.pseudonym;
   }
   const board = await getOrCreateBoard(env, boardId);
-  const post = await createPost(env, board.id, body, author, userId);
+  const post = await createPost(
+    env,
+    board.id,
+    body,
+    author,
+    userId,
+    aliasRecord?.alias ?? null,
+    user?.pseudonym ?? null
+  );
   const room = getBoardRoom(boardId);
   const eventRecord = {
     id: post.id,
@@ -1201,7 +1214,7 @@ var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "jsonError");
 var middleware_miniflare3_json_error_default = jsonError;
 
-// .wrangler/tmp/bundle-Xx7NXI/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-fBUk5f/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default,
   middleware_miniflare3_json_error_default
@@ -1233,7 +1246,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-Xx7NXI/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-fBUk5f/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

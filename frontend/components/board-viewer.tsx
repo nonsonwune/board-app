@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useBoardEvents } from '../hooks/use-board-events';
 import type {
@@ -13,6 +14,7 @@ import type {
   UpsertAliasResponse,
   UpdateReactionResponse
 } from '@board-app/shared';
+import { useIdentityContext } from '../context/identity-context';
 
 interface BoardViewerProps {
   boardId: string;
@@ -20,23 +22,33 @@ interface BoardViewerProps {
 
 export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
+  const {
+    identity: sharedIdentity,
+    aliasMap,
+    setIdentity: setSharedIdentity,
+    setAlias: setSharedAlias,
+    getAlias,
+    hydrated: identityHydrated
+  } = useIdentityContext();
+    useIdentityContext();
   const { events, status, error } = useBoardEvents(boardId, { workerBaseUrl });
   const [boardMeta, setBoardMeta] = useState<BoardSummary | null>(null);
   const [posts, setPosts] = useState<BoardPost[]>([]);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [feedLoading, setFeedLoading] = useState<boolean>(true);
-  const [identity, setIdentity] = useState<RegisterIdentityResponse['user'] | null>(null);
+  const [identity, setIdentity] = useState<RegisterIdentityResponse['user'] | null>(sharedIdentity ?? null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [identityLoading, setIdentityLoading] = useState<boolean>(false);
   const [reactionUserId, setReactionUserId] = useState('');
   const [reactionPostId, setReactionPostId] = useState('');
   const [reactionStatus, setReactionStatus] = useState<string | null>(null);
   const [reactionLoading, setReactionLoading] = useState<boolean>(false);
-  const [alias, setAlias] = useState<BoardAlias | null>(null);
+  const sharedAlias = getAlias(boardId);
+  const [alias, setAlias] = useState<BoardAlias | null>(sharedAlias);
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [aliasLoading, setAliasLoading] = useState<boolean>(false);
-  const [aliasInput, setAliasInput] = useState('');
+  const [aliasInput, setAliasInput] = useState(sharedAlias?.alias ?? '');
 
   useEffect(() => {
     setAliasStatus(null);
@@ -44,33 +56,22 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   }, [identity?.id, boardId]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = window.localStorage.getItem('boardapp:identity');
-      if (stored) {
-        const parsed = JSON.parse(stored) as RegisterIdentityResponse['user'];
-        if (!identity) {
-          setIdentity(parsed);
-          setReactionUserId(parsed.id);
-        }
-      }
-    } catch (error) {
-      console.warn('[ui] failed to read stored identity', error);
+    if (sharedIdentity && sharedIdentity.id !== identity?.id) {
+      setIdentity(sharedIdentity);
+      setReactionUserId(sharedIdentity.id);
+      return;
     }
-  }, []);
+    if (!sharedIdentity && identity) {
+      setIdentity(null);
+      setReactionUserId('');
+    }
+  }, [sharedIdentity, identity]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      if (identity) {
-        window.localStorage.setItem('boardapp:identity', JSON.stringify(identity));
-      } else {
-        window.localStorage.removeItem('boardapp:identity');
-      }
-    } catch (error) {
-      console.warn('[ui] failed to persist identity', error);
+    if (identity?.id !== sharedIdentity?.id) {
+      setSharedIdentity(identity);
     }
-  }, [identity]);
+  }, [identity, sharedIdentity, setSharedIdentity]);
 
   const statusLabel = useMemo(() => {
     if (status === 'connected') return 'Live';
@@ -93,6 +94,18 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   }, [status]);
 
   const sortedEvents = useMemo(() => events.slice().sort((a, b) => a.timestamp - b.timestamp), [events]);
+
+  const effectiveIdentity = identityHydrated ? identity : null;
+
+  const boardAliasLookup = useMemo(() => {
+    const map = new Map<string, string>();
+    posts.forEach(post => {
+      if (post.userId && (post.alias || post.pseudonym)) {
+        map.set(post.userId, post.alias ?? post.pseudonym ?? '');
+      }
+    });
+    return map;
+  }, [posts]);
 
   const fetchFeed = useCallback(
     async (signal?: AbortSignal) => {
@@ -142,18 +155,10 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       return;
     }
 
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = window.localStorage.getItem(`boardapp:alias:${boardId}`);
-        if (stored) {
-          const parsed = JSON.parse(stored) as BoardAlias;
-          if (parsed.userId === identity.id) {
-            setAlias(parsed);
-          }
-        }
-      } catch (error) {
-        console.warn('[ui] failed to read stored alias', error);
-      }
+    if (sharedAlias && sharedAlias.userId === identity.id) {
+      setAlias(sharedAlias);
+      setAliasInput(sharedAlias.alias);
+      return;
     }
 
     let cancelled = false;
@@ -186,21 +191,25 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [identity, boardId, workerBaseUrl]);
+  }, [identity, boardId, workerBaseUrl, sharedAlias]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!identity || !alias) {
-      window.localStorage.removeItem(`boardapp:alias:${boardId}`);
+    if (!identity) {
+      if (sharedAlias) {
+        setSharedAlias(boardId, null);
+      }
       return;
     }
 
-    try {
-      window.localStorage.setItem(`boardapp:alias:${boardId}`, JSON.stringify(alias));
-    } catch (error) {
-      console.warn('[ui] failed to persist alias', error);
+    if (!alias && sharedAlias) {
+      setSharedAlias(boardId, null);
+      return;
     }
-  }, [alias, boardId, identity]);
+
+    if (alias && (!sharedAlias || sharedAlias.id !== alias.id || sharedAlias.alias !== alias.alias)) {
+      setSharedAlias(boardId, alias);
+    }
+  }, [alias, sharedAlias, boardId, identity?.id, setSharedAlias]);
 
   useEffect(() => {
     if (alias?.alias) {
@@ -460,6 +469,27 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           {boardMeta?.description && (
             <p className="text-sm text-slate-500">{boardMeta.description}</p>
           )}
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+            {effectiveIdentity ? (
+              <span className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 font-medium text-slate-200">
+                {effectiveIdentity.pseudonym}
+                <span className="text-[10px] text-slate-500">#{effectiveIdentity.id.slice(0, 6)}</span>
+              </span>
+            ) : (
+              <span>Register an identity to post as yourself.</span>
+            )}
+            {effectiveIdentity && (
+              <span className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-slate-300">
+                Alias: <strong className="text-slate-100">{alias?.alias ?? boardAliasLookup.get(effectiveIdentity.id) ?? '—'}</strong>
+              </span>
+            )}
+            <Link
+              href="/profile"
+              className="rounded-md border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
+            >
+              Manage Identity →
+            </Link>
+          </div>
         </header>
 
         {error && (
@@ -593,22 +623,50 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             </div>
           )}
           <div className="mt-4 space-y-4">
-            {posts.map(post => (
-              <article key={post.id} className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/20">
-                <header className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
-                  <span className="font-semibold text-slate-200">{post.author || 'Anon'}</span>
-                  <time className="font-medium text-slate-300">
-                    {new Date(post.createdAt).toLocaleString()}
-                  </time>
-                </header>
-                <p className="mt-3 text-sm text-slate-100">{post.body}</p>
-                <footer className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                  <span>👍 {post.likeCount}</span>
-                  <span>👎 {post.dislikeCount}</span>
-                  <span>Total {post.reactionCount}</span>
-                </footer>
-              </article>
-            ))}
+            {posts.map(post => {
+              const isMine = effectiveIdentity?.id && post.userId === effectiveIdentity.id;
+              return (
+                <article
+                  key={post.id}
+                  className={`rounded-xl border bg-slate-900/40 p-4 shadow-sm transition ${
+                    isMine
+                      ? 'border-emerald-500/60 shadow-emerald-500/20'
+                      : 'border-slate-800 shadow-slate-950/20'
+                  }`}
+                >
+                  <header className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
+                    <div className="flex flex-col">
+                      <span className="font-semibold text-slate-200">{post.author || 'Anon'}</span>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                        {post.userId && (
+                          <span className="font-mono text-slate-600">#{post.userId.slice(0, 8)}</span>
+                        )}
+                        <span className="flex items-center gap-1 text-slate-400">
+                          <span className="text-[10px] uppercase tracking-[2px] text-slate-500">Alias</span>
+                        <span className="rounded border border-slate-800 bg-slate-950/70 px-1.5 py-0.5 text-slate-200">
+                          {post.alias || post.author || post.pseudonym || 'Anon'}
+                        </span>
+                        </span>
+                        {isMine && (
+                          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-medium text-emerald-300">
+                            You
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <time className="font-medium text-slate-300">
+                      {new Date(post.createdAt).toLocaleString()}
+                    </time>
+                  </header>
+                  <p className="mt-3 text-sm text-slate-100">{post.body}</p>
+                  <footer className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-500">
+                    <span>👍 {post.likeCount}</span>
+                    <span>👎 {post.dislikeCount}</span>
+                    <span>Total {post.reactionCount}</span>
+                  </footer>
+                </article>
+              );
+            })}
           </div>
 
           <form onSubmit={handleSendReaction} className="mt-8 mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">

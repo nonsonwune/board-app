@@ -10,6 +10,8 @@ export interface BoardPost {
   boardId: string;
   userId: string | null;
   author: string | null;
+  alias: string | null;
+  pseudonym: string | null;
   body: string;
   createdAt: number;
   reactionCount: number;

@@ -7,6 +7,7 @@ import type {
   BoardSummary,
   CreatePostRequest,
   CreatePostResponse,
+  BoardAlias,
   RegisterIdentityRequest,
   RegisterIdentityResponse,
   UpsertAliasRequest,
@@ -194,14 +195,16 @@ async function createPost(
   boardId: string,
   body: string,
   author?: string | null,
-  userId?: string | null
+  userId?: string | null,
+  alias?: string | null,
+  pseudonym?: string | null
 ): Promise<SharedBoardPost> {
   await ensureSchema(env);
   const id = crypto.randomUUID();
   const createdAt = Date.now();
   await env.BOARD_DB.prepare(
     `INSERT INTO posts (id, board_id, user_id, author, body, created_at, reaction_count, like_count, dislike_count)
-       VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0)`
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 0)`
   )
     .bind(id, boardId, userId ?? null, author ?? null, body, createdAt)
     .run();
@@ -211,6 +214,8 @@ async function createPost(
     boardId,
     userId: userId ?? null,
     author: author ?? null,
+    alias: alias ?? author ?? null,
+    pseudonym: pseudonym ?? null,
     body,
     createdAt,
     reactionCount: 0,
@@ -252,6 +257,8 @@ async function listPosts(env: Env, boardId: string, limit: number): Promise<Shar
     boardId: row.board_id,
     userId: row.user_id ?? null,
     author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
+    alias: row.board_alias ?? row.author ?? null,
+    pseudonym: row.pseudonym ?? null,
     body: row.body,
     createdAt: row.created_at,
     reactionCount: row.reaction_count,
@@ -679,6 +686,7 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
 
   let author = authorInput;
   let user: UserRecord | null = null;
+  let aliasRecord: BoardAlias | null = null;
   if (userId) {
     user = await getUserById(env, userId);
     if (!user) {
@@ -688,12 +696,20 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
       });
     }
 
-    const alias = await getBoardAlias(env, boardId, userId);
-    author = alias?.alias ?? author ?? user.pseudonym;
+    aliasRecord = await getBoardAlias(env, boardId, userId);
+    author = aliasRecord?.alias ?? author ?? user.pseudonym;
   }
 
   const board = await getOrCreateBoard(env, boardId);
-  const post = await createPost(env, board.id, body, author, userId);
+  const post = await createPost(
+    env,
+    board.id,
+    body,
+    author,
+    userId,
+    aliasRecord?.alias ?? null,
+    user?.pseudonym ?? null
+  );
 
   const room = getBoardRoom(boardId);
   const eventRecord: BoardEventPayload = {
