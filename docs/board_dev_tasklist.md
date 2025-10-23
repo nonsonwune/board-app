@@ -3,7 +3,7 @@
 Tracking TODOs stemming from the latest product decisions. Update as work progresses.
 
 ## Core Feed & Location
-- [ ] Implement adaptive radius service (shrink/grow based on post freshness) with hysteresis.
+- [x] Implement adaptive radius service (shrink/grow based on post freshness) with hysteresis (`packages/shared/src/location.ts`, `workers/src/index.ts`, `workers/src/__tests__/storage.spec.ts`).
 - [x] Add quiet-mode content prompts when feed is sparse (`frontend/components/board-viewer.tsx`).
 - [x] Layer optional sponsored quiet-mode cards / inventory controls (`frontend/components/board-viewer.tsx`).
 - [x] Instrument dead-zone detector (board freshness metric feeding alerting) (`workers/src/index.ts`, `workers/src/__tests__/storage.spec.ts`).

@@ -206,7 +206,7 @@ where author_bonus = 1.1 for Top‑10, else 1.0 (cap at +10%)
 
 **user_board_aliases** — user_id; board_id; alias (unique per Board); created_at.
 
-**boards** — id; display_name; place_id; latitude/longitude; h3_anchor (res9); radius_m (1500 default); type (campus/neighborhood/other); creator_user_id; live_mode (auto/force_on/force_off); live_last_active_at; created_at.
+**boards** — id; display_name; place_id; latitude/longitude; h3_anchor (res9); radius_m (adaptive, 1500 default); radius_state_json; radius_updated_at; type (campus/neighborhood/other); creator_user_id; live_mode (auto/force_on/force_off); live_last_active_at; created_at.
 
 **board_cells** — board_id; h3_index (covering cells).
 

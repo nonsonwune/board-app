@@ -109,6 +109,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const lastSponsoredImpressionRef = useRef<string | null>(null);
   const [sponsoredStorageHydrated, setSponsoredStorageHydrated] = useState(false);
   const { addToast } = useToast();
+  const isPhaseOneBoard = boardMeta?.phaseMode === 'phase1';
+  const isTextOnlyBoard = boardMeta?.textOnly ?? false;
+  const radiusMetersDisplay = boardMeta?.radiusMeters ? Math.round(boardMeta.radiusMeters) : null;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -763,7 +766,10 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           <h1 className="text-4xl font-semibold text-white">{boardMeta?.displayName ?? boardId}</h1>
           <p className="text-sm text-slate-400">
             Connected to <code className="rounded bg-slate-900 px-1">{workerBaseUrl}</code>{' '}
-            · showing posts within {sharedAlias ? 'your saved radius' : 'an adaptive radius'}
+            ·{' '}
+            {isPhaseOneBoard
+              ? `showing posts within a fixed ${radiusMetersDisplay ?? 1500} m radius`
+              : `showing posts within ${sharedAlias ? 'your saved radius' : 'an adaptive radius'}`}
           </p>
           {boardMeta?.description ? (
             <p className="text-sm text-slate-500">{boardMeta.description}</p>
@@ -794,6 +800,21 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             </Link>
           </div>
         </header>
+
+        {(isPhaseOneBoard || isTextOnlyBoard) && (
+          <div className="mt-6 rounded-lg border border-sky-500/40 bg-sky-500/10 p-4 text-sm text-sky-100">
+            {isPhaseOneBoard && (
+              <p>
+                Phase 1 launch mode active. Radius locked to {radiusMetersDisplay ?? 1500} m for consistent dorm coverage.
+              </p>
+            )}
+            {isTextOnlyBoard && (
+              <p className="mt-2">
+                Posts are limited to text while we tune onboarding. Images will return in the next phase.
+              </p>
+            )}
+          </div>
+        )}
 
         {error && (
           <div className="mt-6 rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200">

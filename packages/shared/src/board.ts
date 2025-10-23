@@ -3,6 +3,10 @@ export interface BoardSummary {
   displayName: string;
   description: string | null;
   createdAt: number;
+  radiusMeters?: number;
+  radiusUpdatedAt?: number | null;
+  phaseMode?: 'default' | 'phase1';
+  textOnly?: boolean;
 }
 
 export interface BoardPost {

@@ -2,7 +2,10 @@ CREATE TABLE IF NOT EXISTS boards (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
   description TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  radius_meters INTEGER NOT NULL DEFAULT 1500,
+  radius_state TEXT,
+  radius_updated_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS posts (
   id TEXT PRIMARY KEY,

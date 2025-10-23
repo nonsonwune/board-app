@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import {
+import WorkerEntrypoint, {
   __resetSchemaForTests,
   ensureSchema,
   getOrCreateBoard,
@@ -12,6 +12,7 @@ import {
   detectDeadZones,
   __internal
 } from '../index';
+import type { BoardFeedResponse } from '@board-app/shared';
 import type { Env } from '../index';
 
 type ExecCall = { sql: string };
@@ -47,12 +48,15 @@ class BoundPrepared {
   async run() {
     this.db.prepareCalls.push({ sql: this.sql, params: this.params });
     if (this.sql.startsWith('INSERT INTO boards')) {
-      const [id, name, description, createdAt] = this.params;
+      const [id, name, description, createdAt, radiusMeters = 1500, radiusState = null, radiusUpdatedAt = createdAt] = this.params;
       this.db.boards.set(id, {
         id,
         display_name: name,
         description,
-        created_at: createdAt
+        created_at: createdAt,
+        radius_meters: radiusMeters ?? 1500,
+        radius_state: typeof radiusState === 'string' ? radiusState : radiusState ? JSON.stringify(radiusState) : null,
+        radius_updated_at: radiusUpdatedAt ?? createdAt
       });
     }
     if (this.sql.startsWith('INSERT INTO posts')) {
@@ -97,6 +101,16 @@ class BoundPrepared {
         created_at: createdAt
       });
     }
+    if (this.sql.startsWith('UPDATE boards SET radius_meters')) {
+      const [radiusMeters, radiusState, radiusUpdatedAt, boardId] = this.params;
+      const board = this.db.boards.get(boardId);
+      if (board) {
+        board.radius_meters = radiusMeters;
+        board.radius_state = radiusState;
+        board.radius_updated_at = radiusUpdatedAt;
+      }
+    }
+
     if (this.sql.startsWith('INSERT INTO access_identity_events')) {
       const [id, eventType, subject, userId, email, traceId, metadata, createdAt] = this.params;
       this.db.accessIdentityEvents.push({
@@ -349,7 +363,10 @@ describe('storage helpers', () => {
   beforeEach(() => {
     env = {
       BOARD_DB: new MockD1(),
-      BOARD_ROOM_DO: {} as any
+      BOARD_ROOM_DO: {} as any,
+      PHASE_ONE_BOARDS: undefined,
+      PHASE_ONE_TEXT_ONLY_BOARDS: undefined,
+      PHASE_ONE_RADIUS_METERS: undefined
     };
     __resetSchemaForTests();
   });
@@ -590,4 +607,53 @@ describe('storage helpers', () => {
       vi.useRealTimers();
     }
   });
+
+  it('adapts board radius based on recent activity', async () => {
+    const board = await getOrCreateBoard(env, 'adaptive-board');
+    const entry = env.BOARD_DB.boards.get(board.id);
+    if (entry) {
+      entry.radius_meters = 800;
+      entry.radius_state = JSON.stringify({ currentMeters: 800, lastExpandedAt: null, lastContractedAt: null });
+      entry.radius_updated_at = 0;
+    }
+
+    const request = new Request('https://unit.test/boards/adaptive-board/feed');
+    const ctx = {
+      waitUntil: (_promise: Promise<unknown>) => {}
+    } as ExecutionContext;
+    const response = await WorkerEntrypoint.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as BoardFeedResponse;
+    expect(body.board.radiusMeters).toBeGreaterThan(800);
+    const updated = env.BOARD_DB.boards.get(board.id);
+    expect(updated?.radius_meters).toBe(body.board.radiusMeters);
+  });
+
+  it('locks radius and text-only settings for phase one boards', async () => {
+    env.PHASE_ONE_BOARDS = 'phase-one-board';
+    env.PHASE_ONE_TEXT_ONLY_BOARDS = 'phase-one-board';
+    env.PHASE_ONE_RADIUS_METERS = '900';
+
+    const board = await getOrCreateBoard(env, 'phase-one-board');
+    const entry = env.BOARD_DB.boards.get(board.id);
+    if (entry) {
+      entry.radius_meters = 500;
+      entry.radius_state = JSON.stringify({ currentMeters: 500, lastExpandedAt: null, lastContractedAt: null });
+      entry.radius_updated_at = 0;
+    }
+
+    const request = new Request('https://unit.test/boards/phase-one-board/feed');
+    const ctx = {
+      waitUntil: (_promise: Promise<unknown>) => {}
+    } as ExecutionContext;
+    const response = await WorkerEntrypoint.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as BoardFeedResponse;
+    expect(body.board.phaseMode).toBe('phase1');
+    expect(body.board.textOnly).toBe(true);
+    expect(body.board.radiusMeters).toBe(900);
+    const updated = env.BOARD_DB.boards.get(board.id);
+    expect(updated?.radius_meters).toBe(900);
+  });
+
 });

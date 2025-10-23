@@ -22,6 +22,7 @@ import type {
   CreateSessionRequest,
   CreateSessionResponse
 } from '@board-app/shared';
+import { getAdaptiveRadius, type RadiusState } from '@board-app/shared/location';
 import { SESSION_TTL_MS } from '@board-app/shared';
 
 type WebSocketRequest = Request & { webSocket?: WebSocket };
@@ -32,6 +33,9 @@ export interface Env {
   ACCESS_JWT_AUDIENCE?: string;
   ACCESS_JWT_ISSUER?: string;
   ACCESS_JWT_JWKS_URL?: string;
+  PHASE_ONE_BOARDS?: string;
+  PHASE_ONE_TEXT_ONLY_BOARDS?: string;
+  PHASE_ONE_RADIUS_METERS?: string;
 }
 
 const ALLOWED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3002'];
@@ -48,8 +52,55 @@ const TIME_DECAY_HALF_LIFE_MS = 24 * 60 * 60 * 1000;
 const VELOCITY_DECAY_MS = 90 * 60 * 1000;
 const VELOCITY_RATE_SATURATION = 5; // reactions per minute for full velocity credit
 const WILSON_Z = 1.96; // 95% confidence interval
+const ADAPTIVE_RADIUS_WINDOW_MS = 2 * 60 * 60 * 1000;
+const ADAPTIVE_RADIUS_FRESH_THRESHOLD = 8;
+const ADAPTIVE_RADIUS_STALE_THRESHOLD = 4;
+
 
 const textEncoder = new TextEncoder();
+
+interface PhaseOneConfig {
+  boards: Set<string>;
+  textOnlyBoards: Set<string>;
+  radiusMeters: number;
+}
+
+const phaseOneConfigCache = new WeakMap<Env, PhaseOneConfig>();
+
+function normalizeBoardId(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function parseBoardList(value?: string): Set<string> {
+  if (!value) {
+    return new Set();
+  }
+  const entries = value
+    .split(',')
+    .map(entry => normalizeBoardId(entry))
+    .filter(entry => entry.length > 0);
+  return new Set(entries);
+}
+
+function getPhaseOneConfig(env: Env): PhaseOneConfig {
+  const cached = phaseOneConfigCache.get(env);
+  if (cached) {
+    return cached;
+  }
+
+  const boards = parseBoardList(env.PHASE_ONE_BOARDS);
+  const textOnlyBoards = parseBoardList(env.PHASE_ONE_TEXT_ONLY_BOARDS ?? env.PHASE_ONE_BOARDS);
+  const radiusRaw = Number(env.PHASE_ONE_RADIUS_METERS ?? '1500');
+  const radiusMeters = Number.isFinite(radiusRaw) && radiusRaw > 0 ? Math.max(250, Math.min(radiusRaw, 5000)) : 1500;
+
+  const config: PhaseOneConfig = {
+    boards,
+    textOnlyBoards,
+    radiusMeters
+  };
+  phaseOneConfigCache.set(env, config);
+  return config;
+}
 
 type CachedJwks = {
   keys: JsonWebKey[];
@@ -397,7 +448,10 @@ async function ensureSchema(env: Env) {
         `ALTER TABLE posts ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0`,
         `ALTER TABLE posts ADD COLUMN dislike_count INTEGER NOT NULL DEFAULT 0`,
         `ALTER TABLE posts ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL`,
-        `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`
+        `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`,
+        `ALTER TABLE boards ADD COLUMN radius_meters INTEGER NOT NULL DEFAULT 1500`,
+        `ALTER TABLE boards ADD COLUMN radius_state TEXT`,
+        `ALTER TABLE boards ADD COLUMN radius_updated_at INTEGER`
       ];
 
       for (const sql of alterStatements) {
@@ -454,7 +508,7 @@ async function persistEvent(env: Env, record: BoardEventPayload, boardId: string
 async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord> {
   await ensureSchema(env);
   const existing = await env.BOARD_DB.prepare(
-    'SELECT id, display_name, description, created_at FROM boards WHERE id = ?1'
+    'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at FROM boards WHERE id = ?1'
   )
     .bind(boardId)
     .first<BoardRecord>();
@@ -465,17 +519,21 @@ async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord>
 
   const createdAt = Date.now();
   const displayName = formatBoardName(boardId);
+  const radiusState: RadiusState = { currentMeters: 1500, lastExpandedAt: null, lastContractedAt: null };
   await env.BOARD_DB.prepare(
-    'INSERT INTO boards (id, display_name, description, created_at) VALUES (?1, ?2, ?3, ?4)'
+    'INSERT INTO boards (id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
   )
-    .bind(boardId, displayName, null, createdAt)
+    .bind(boardId, displayName, null, createdAt, radiusState.currentMeters, JSON.stringify(radiusState), createdAt)
     .run();
 
   return {
     id: boardId,
     display_name: displayName,
     description: null,
-    created_at: createdAt
+    created_at: createdAt,
+    radius_meters: radiusState.currentMeters,
+    radius_state: JSON.stringify(radiusState),
+    radius_updated_at: createdAt
   };
 }
 
@@ -2066,7 +2124,86 @@ async function handleFeed(request: Request, env: Env, url: URL): Promise<Respons
   const limit = Number.isFinite(limitParam) ? Math.max(0, Math.min(limitParam, 50)) : 20;
 
   const board = await getOrCreateBoard(env, boardId);
-  const posts = await listPosts(env, boardId, limit);
+  const phaseConfig = getPhaseOneConfig(env);
+  const normalizedBoardId = normalizeBoardId(boardId);
+  const isPhaseOne = phaseConfig.boards.has(normalizedBoardId);
+  const isTextOnly = phaseConfig.textOnlyBoards.has(normalizedBoardId);
+  const now = Date.now();
+  const posts = await listPosts(env, boardId, limit, { now });
+
+  const postsInWindowRow = await env.BOARD_DB.prepare(
+    `SELECT COUNT(*) AS post_count
+       FROM posts
+      WHERE board_id = ?1
+        AND created_at >= ?2`
+  )
+    .bind(boardId, now - ADAPTIVE_RADIUS_WINDOW_MS)
+    .first<{ post_count: number | null }>();
+  const postsInWindow = postsInWindowRow?.post_count ?? 0;
+
+  let storedRadiusState: RadiusState | null = null;
+  if (board.radius_state) {
+    try {
+      storedRadiusState = JSON.parse(board.radius_state) as RadiusState;
+    } catch (error) {
+      console.warn('[board] failed to parse radius state', error);
+    }
+  }
+  if (!storedRadiusState) {
+    const currentMeters = typeof board.radius_meters === 'number' && !Number.isNaN(board.radius_meters)
+      ? board.radius_meters
+      : 1500;
+    storedRadiusState = {
+      currentMeters,
+      lastExpandedAt: null,
+      lastContractedAt: null
+    };
+  }
+
+  let adaptiveState: RadiusState;
+  if (isPhaseOne) {
+    adaptiveState = {
+      currentMeters: phaseConfig.radiusMeters,
+      lastExpandedAt: storedRadiusState.lastExpandedAt,
+      lastContractedAt: storedRadiusState.lastContractedAt
+    };
+  } else {
+    adaptiveState = getAdaptiveRadius(
+      storedRadiusState,
+      {
+        postsInWindow,
+        freshThreshold: ADAPTIVE_RADIUS_FRESH_THRESHOLD,
+        staleThreshold: ADAPTIVE_RADIUS_STALE_THRESHOLD,
+        now
+      },
+      {
+        minimumMeters: 250,
+        maximumMeters: 2000,
+        contractionStepMeters: 150,
+        expansionStepMeters: 200,
+        initialMeters: storedRadiusState.currentMeters
+      }
+    );
+  }
+
+  const stateChanged =
+    Math.round(adaptiveState.currentMeters) !== Math.round(board.radius_meters ?? adaptiveState.currentMeters) ||
+    JSON.stringify(storedRadiusState) !== JSON.stringify(adaptiveState);
+  if (stateChanged) {
+    await env.BOARD_DB.prepare(
+      `UPDATE boards
+          SET radius_meters = ?1,
+              radius_state = ?2,
+              radius_updated_at = ?3
+        WHERE id = ?4`
+    )
+      .bind(adaptiveState.currentMeters, JSON.stringify(adaptiveState), now, boardId)
+      .run();
+    board.radius_meters = adaptiveState.currentMeters;
+    board.radius_state = JSON.stringify(adaptiveState);
+    board.radius_updated_at = now;
+  }
+
   const room = boardRooms.get(boardId);
 
   const responseBody: BoardFeedResponse = {
@@ -2074,7 +2211,11 @@ async function handleFeed(request: Request, env: Env, url: URL): Promise<Respons
       id: board.id,
       displayName: board.display_name,
       description: board.description,
-      createdAt: board.created_at
+      createdAt: board.created_at,
+      radiusMeters: board.radius_meters ?? adaptiveState.currentMeters,
+      radiusUpdatedAt: board.radius_updated_at ?? null,
+      phaseMode: isPhaseOne ? 'phase1' : 'default',
+      textOnly: isTextOnly
     },
     posts,
     realtimeConnections: room?.getConnectionCount() ?? 0
@@ -2093,6 +2234,9 @@ type BoardRecord = {
   display_name: string;
   description: string | null;
   created_at: number;
+  radius_meters: number | null;
+  radius_state: string | null;
+  radius_updated_at: number | null;
 };
 
 type PostRecord = {
