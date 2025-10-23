@@ -9,6 +9,16 @@ export interface BoardSummary {
   textOnly?: boolean;
 }
 
+export interface PostImageDraft {
+  id?: string;
+  name: string;
+  type: string;
+  size: number;
+  width?: number;
+  height?: number;
+  checksum?: string;
+}
+
 export interface BoardPost {
   id: string;
   boardId: string;
@@ -22,6 +32,7 @@ export interface BoardPost {
   likeCount: number;
   dislikeCount: number;
   hotRank?: number;
+  images?: string[];
 }
 
 export interface SessionTicket {
@@ -44,12 +55,26 @@ export interface BoardFeedResponse {
   board: BoardSummary;
   posts: BoardPost[];
   realtimeConnections: number;
+  spaces?: BoardSpace[];
+}
+
+export interface BoardSpace {
+  id: string;
+  label: string;
+  type: 'default' | 'topic' | 'events' | 'custom';
+  metadata?: {
+    topic?: string;
+    count?: number;
+    description?: string;
+    [key: string]: unknown;
+  };
 }
 
 export interface CreatePostRequest {
   body: string;
   author?: string;
   userId?: string;
+  images?: PostImageDraft[];
 }
 
 export interface CreatePostResponse {

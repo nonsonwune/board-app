@@ -5,6 +5,7 @@ import type {
   BoardFeedResponse,
   BoardPost as SharedBoardPost,
   BoardSummary,
+  BoardSpace,
   CreatePostRequest,
   CreatePostResponse,
   RegisterIdentityRequest,
@@ -20,7 +21,8 @@ import type {
   BoardAlias,
   SessionTicket,
   CreateSessionRequest,
-  CreateSessionResponse
+  CreateSessionResponse,
+  PostImageDraft
 } from '@board-app/shared';
 import { getAdaptiveRadius, type RadiusState } from '@board-app/shared/location';
 import { SESSION_TTL_MS } from '@board-app/shared';
@@ -36,6 +38,8 @@ export interface Env {
   PHASE_ONE_BOARDS?: string;
   PHASE_ONE_TEXT_ONLY_BOARDS?: string;
   PHASE_ONE_RADIUS_METERS?: string;
+  PHASE_ADMIN_TOKEN?: string;
+  ENABLE_IMAGE_UPLOADS?: string;
 }
 
 const ALLOWED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3002'];
@@ -55,6 +59,9 @@ const WILSON_Z = 1.96; // 95% confidence interval
 const ADAPTIVE_RADIUS_WINDOW_MS = 2 * 60 * 60 * 1000;
 const ADAPTIVE_RADIUS_FRESH_THRESHOLD = 8;
 const ADAPTIVE_RADIUS_STALE_THRESHOLD = 4;
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_IMAGE_COUNT = 4;
+const MAX_IMAGE_SIZE_BYTES = 3 * 1024 * 1024; // 3 MB
 
 
 const textEncoder = new TextEncoder();
@@ -80,6 +87,19 @@ function parseBoardList(value?: string): Set<string> {
     .map(entry => normalizeBoardId(entry))
     .filter(entry => entry.length > 0);
   return new Set(entries);
+}
+
+
+function requirePhaseAdmin(request: Request, env: Env) {
+  const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+  if (!env.PHASE_ADMIN_TOKEN || token !== env.PHASE_ADMIN_TOKEN) {
+    throw new ApiError(401, { error: 'unauthorized phase admin request' });
+  }
+}
+
+
+function isImageUploadsEnabled(env: Env) {
+  return (env.ENABLE_IMAGE_UPLOADS ?? '').toLowerCase() === 'true';
 }
 
 function getPhaseOneConfig(env: Env): PhaseOneConfig {
@@ -451,7 +471,9 @@ async function ensureSchema(env: Env) {
         `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`,
         `ALTER TABLE boards ADD COLUMN radius_meters INTEGER NOT NULL DEFAULT 1500`,
         `ALTER TABLE boards ADD COLUMN radius_state TEXT`,
-        `ALTER TABLE boards ADD COLUMN radius_updated_at INTEGER`
+        `ALTER TABLE boards ADD COLUMN radius_updated_at INTEGER`,
+        `ALTER TABLE boards ADD COLUMN phase_mode TEXT NOT NULL DEFAULT 'default'`,
+        `ALTER TABLE boards ADD COLUMN text_only INTEGER NOT NULL DEFAULT 0`
       ];
 
       for (const sql of alterStatements) {
@@ -508,7 +530,7 @@ async function persistEvent(env: Env, record: BoardEventPayload, boardId: string
 async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord> {
   await ensureSchema(env);
   const existing = await env.BOARD_DB.prepare(
-    'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at FROM boards WHERE id = ?1'
+    'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only FROM boards WHERE id = ?1'
   )
     .bind(boardId)
     .first<BoardRecord>();
@@ -521,9 +543,9 @@ async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord>
   const displayName = formatBoardName(boardId);
   const radiusState: RadiusState = { currentMeters: 1500, lastExpandedAt: null, lastContractedAt: null };
   await env.BOARD_DB.prepare(
-    'INSERT INTO boards (id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
+    'INSERT INTO boards (id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
   )
-    .bind(boardId, displayName, null, createdAt, radiusState.currentMeters, JSON.stringify(radiusState), createdAt)
+    .bind(boardId, displayName, null, createdAt, radiusState.currentMeters, JSON.stringify(radiusState), createdAt, 'default', 0)
     .run();
 
   return {
@@ -533,7 +555,9 @@ async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord>
     created_at: createdAt,
     radius_meters: radiusState.currentMeters,
     radius_state: JSON.stringify(radiusState),
-    radius_updated_at: createdAt
+    radius_updated_at: createdAt,
+    phase_mode: 'default',
+    text_only: 0
   };
 }
 
@@ -544,7 +568,8 @@ async function createPost(
   author?: string | null,
   userId?: string | null,
   alias?: string | null,
-  pseudonym?: string | null
+  pseudonym?: string | null,
+  images?: string[]
 ): Promise<SharedBoardPost> {
   await ensureSchema(env);
   const id = crypto.randomUUID();
@@ -570,7 +595,8 @@ async function createPost(
     reactionCount: 0,
     likeCount: 0,
     dislikeCount: 0,
-    hotRank
+    hotRank,
+    images: images && images.length > 0 ? images : undefined
   };
 }
 
@@ -1379,6 +1405,10 @@ export default {
         return handleWebsocket(request, env, ctx, url);
       }
 
+      if (url.pathname.match(/^\/boards\/[^/]+\/phase$/)) {
+        return withCors(request, await handlePhaseSettings(request, env, url));
+      }
+
       if (url.pathname.match(/^\/boards\/[^/]+\/aliases$/)) {
         return withCors(request, await handleAlias(request, env, url));
       }
@@ -1693,6 +1723,97 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
   }
 
   const board = await getOrCreateBoard(env, boardId);
+  const phaseConfig = getPhaseOneConfig(env);
+  const normalizedBoardId = normalizeBoardId(boardId);
+  const boardPhaseMode = board.phase_mode === 'phase1';
+  const boardTextOnly = Boolean(board.text_only);
+  const isPhaseOne = boardPhaseMode || phaseConfig.boards.has(normalizedBoardId);
+  const isTextOnly = boardTextOnly || phaseConfig.textOnlyBoards.has(normalizedBoardId);
+  const uploadsEnabled = isImageUploadsEnabled(env);
+  const rawImages = Array.isArray(payload.images) ? (payload.images as PostImageDraft[]) : [];
+  let sanitizedImages: PostImageDraft[] | null = null;
+
+  if (rawImages.length > 0) {
+    if (isTextOnly) {
+      return new Response(JSON.stringify({ error: 'images are disabled for this board', trace_id: traceId }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (!uploadsEnabled) {
+      return new Response(JSON.stringify({ error: 'image uploads are currently disabled', trace_id: traceId }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (rawImages.length > MAX_IMAGE_COUNT) {
+      return new Response(
+        JSON.stringify({ error: `maximum of ${MAX_IMAGE_COUNT} images per post`, trace_id: traceId }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+    }
+
+    sanitizedImages = [];
+    const seen = new Set<string>();
+
+    for (let index = 0; index < rawImages.length; index += 1) {
+      const image = rawImages[index];
+      if (!image || typeof image !== 'object') {
+        return new Response(JSON.stringify({ error: `invalid image payload at index ${index}`, trace_id: traceId }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      const name = typeof image.name === 'string' ? image.name.trim() : '';
+      const type = typeof image.type === 'string' ? image.type.toLowerCase() : '';
+      const size = typeof image.size === 'number' ? image.size : NaN;
+      if (!name) {
+        return new Response(JSON.stringify({ error: `image name required at index ${index}`, trace_id: traceId }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (!ALLOWED_IMAGE_TYPES.has(type)) {
+        return new Response(JSON.stringify({ error: `unsupported image type at index ${index}`, trace_id: traceId }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (!Number.isFinite(size) || size <= 0 || size > MAX_IMAGE_SIZE_BYTES) {
+        return new Response(JSON.stringify({ error: `image too large at index ${index}`, trace_id: traceId }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      const id = typeof image.id === 'string' ? image.id.trim() : undefined;
+      const checksum = typeof image.checksum === 'string' ? image.checksum.trim() : undefined;
+      const dedupeKey = id ?? checksum;
+      if (dedupeKey) {
+        if (seen.has(dedupeKey)) {
+          return new Response(JSON.stringify({ error: `duplicate image reference ${dedupeKey}`, trace_id: traceId }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        seen.add(dedupeKey);
+      }
+      sanitizedImages.push({
+        id: id || undefined,
+        name,
+        type,
+        size,
+        width: typeof image.width === 'number' && image.width > 0 ? image.width : undefined,
+        height: typeof image.height === 'number' && image.height > 0 ? image.height : undefined,
+        checksum: checksum || undefined
+      });
+    }
+  }
+  const imageRefs = sanitizedImages ? sanitizedImages.map(image => image.id ?? image.checksum ?? image.name) : undefined;
   const post = await createPost(
     env,
     board.id,
@@ -1700,14 +1821,16 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
     author,
     userId,
     aliasRecord?.alias ?? null,
-    user?.pseudonym ?? null
+    user?.pseudonym ?? null,
+    imageRefs
   );
+  const postWithImages = imageRefs && imageRefs.length > 0 ? { ...post, images: imageRefs } : post;
 
   const room = getBoardRoom(boardId);
   const eventRecord: BoardEventPayload = {
     id: post.id,
     event: 'post.created',
-    data: post,
+    data: postWithImages,
     traceId,
     timestamp: post.createdAt
   };
@@ -1726,7 +1849,7 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
 
   ctx.waitUntil(persistEvent(env, eventRecord, boardId));
 
-  const responseBody: CreatePostResponse = { ok: true, post };
+  const responseBody: CreatePostResponse = { ok: true, post: postWithImages };
   return new Response(JSON.stringify(responseBody), {
     status: 201,
     headers: { 'Content-Type': 'application/json' }
@@ -1879,6 +2002,105 @@ async function handleCreateSession(request: Request, env: Env): Promise<Response
     status: 201,
     headers: { 'Content-Type': 'application/json' }
   });
+}
+
+
+async function handlePhaseSettings(request: Request, env: Env, url: URL): Promise<Response> {
+  const match = url.pathname.match(/^\/boards\/([^/]+)\/phase$/);
+  const boardId = decodeURIComponent(match![1]);
+  requirePhaseAdmin(request, env);
+
+  const board = await getOrCreateBoard(env, boardId);
+  let existingState: RadiusState | null = null;
+  if (board.radius_state) {
+    try {
+      existingState = JSON.parse(board.radius_state) as RadiusState;
+    } catch (error) {
+      console.warn('[phase] failed to parse stored radius state', error);
+    }
+  }
+
+  if (request.method === 'GET') {
+    return new Response(
+      JSON.stringify({
+        boardId,
+        phaseMode: board.phase_mode === 'phase1' ? 'phase1' : 'default',
+        textOnly: Boolean(board.text_only),
+        radiusMeters: board.radius_meters ?? existingState?.currentMeters ?? 1500
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
+  }
+
+  if (request.method !== 'PUT' && request.method !== 'PATCH') {
+    return new Response(JSON.stringify({ error: 'method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  let payload: any;
+  try {
+    payload = await request.json();
+  } catch {
+    throw new ApiError(400, { error: 'invalid JSON payload' });
+  }
+
+  const phaseMode = payload?.phaseMode === 'phase1' ? 'phase1' : 'default';
+  const textOnly = Boolean(payload?.textOnly);
+  const radiusInput = Number(payload?.radiusMeters);
+  const requestedRadius = Number.isFinite(radiusInput) && radiusInput > 0 ? Math.max(250, Math.min(radiusInput, 5000)) : null;
+
+  const nextRadiusMeters = phaseMode === 'phase1'
+    ? requestedRadius ?? existingState?.currentMeters ?? board.radius_meters ?? 1500
+    : board.radius_meters ?? existingState?.currentMeters ?? 1500;
+
+  const nextRadiusState: RadiusState = phaseMode === 'phase1'
+    ? {
+        currentMeters: nextRadiusMeters,
+        lastExpandedAt: existingState?.lastExpandedAt ?? null,
+        lastContractedAt: existingState?.lastContractedAt ?? null
+      }
+    : existingState ?? {
+        currentMeters: nextRadiusMeters,
+        lastExpandedAt: null,
+        lastContractedAt: null
+      };
+
+  const now = Date.now();
+  await env.BOARD_DB.prepare(
+    `UPDATE boards
+        SET phase_mode = ?1,
+            text_only = ?2,
+            radius_meters = ?3,
+            radius_state = ?4,
+            radius_updated_at = ?5
+      WHERE id = ?6`
+  )
+    .bind(phaseMode, textOnly ? 1 : 0, nextRadiusMeters, JSON.stringify(nextRadiusState), now, boardId)
+    .run();
+
+  board.phase_mode = phaseMode;
+  board.text_only = textOnly ? 1 : 0;
+  board.radius_meters = nextRadiusMeters;
+  board.radius_state = JSON.stringify(nextRadiusState);
+  board.radius_updated_at = now;
+
+  return new Response(
+    JSON.stringify({
+      boardId,
+      phaseMode,
+      textOnly,
+      radiusMeters: nextRadiusMeters
+    }),
+    {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }
+  );
 }
 
 async function handleAlias(request: Request, env: Env, url: URL): Promise<Response> {
@@ -2126,8 +2348,11 @@ async function handleFeed(request: Request, env: Env, url: URL): Promise<Respons
   const board = await getOrCreateBoard(env, boardId);
   const phaseConfig = getPhaseOneConfig(env);
   const normalizedBoardId = normalizeBoardId(boardId);
-  const isPhaseOne = phaseConfig.boards.has(normalizedBoardId);
-  const isTextOnly = phaseConfig.textOnlyBoards.has(normalizedBoardId);
+  const boardPhaseMode = board.phase_mode === 'phase1';
+  const boardTextOnly = Boolean(board.text_only);
+  const isPhaseOne = boardPhaseMode || phaseConfig.boards.has(normalizedBoardId);
+  const isTextOnly = boardTextOnly || phaseConfig.textOnlyBoards.has(normalizedBoardId);
+  const phaseOneRadius = boardPhaseMode ? board.radius_meters ?? phaseConfig.radiusMeters : phaseConfig.radiusMeters;
   const now = Date.now();
   const posts = await listPosts(env, boardId, limit, { now });
 
@@ -2163,7 +2388,7 @@ async function handleFeed(request: Request, env: Env, url: URL): Promise<Respons
   let adaptiveState: RadiusState;
   if (isPhaseOne) {
     adaptiveState = {
-      currentMeters: phaseConfig.radiusMeters,
+      currentMeters: phaseOneRadius,
       lastExpandedAt: storedRadiusState.lastExpandedAt,
       lastContractedAt: storedRadiusState.lastContractedAt
     };
@@ -2218,7 +2443,8 @@ async function handleFeed(request: Request, env: Env, url: URL): Promise<Respons
       textOnly: isTextOnly
     },
     posts,
-    realtimeConnections: room?.getConnectionCount() ?? 0
+    realtimeConnections: room?.getConnectionCount() ?? 0,
+    spaces: buildBoardSpaces(posts)
   };
 
   return new Response(JSON.stringify(responseBody), {
@@ -2237,7 +2463,46 @@ type BoardRecord = {
   radius_meters: number | null;
   radius_state: string | null;
   radius_updated_at: number | null;
+  phase_mode: string | null;
+  text_only: number | null;
 };
+
+function buildBoardSpaces(posts: SharedBoardPost[]): BoardSpace[] {
+  const base: BoardSpace[] = [
+    { id: 'home', label: 'Home', type: 'default' },
+    { id: 'student-life', label: 'Student Life', type: 'default' },
+    { id: 'events', label: 'Events', type: 'events' },
+    { id: 'sports', label: 'Sports', type: 'default' }
+  ];
+
+  const hashtagRegex = /#[\p{L}0-9_-]+/gu;
+  const counts = new Map<string, number>();
+  for (const post of posts) {
+    const matches = post.body.match(hashtagRegex);
+    if (!matches) continue;
+    for (const tag of matches) {
+      const normalized = tag.toLowerCase();
+      counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+    }
+  }
+
+  const dynamic = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([tag, count]) => ({
+      id: `topic-${tag.slice(1).toLowerCase()}`,
+      label: tag,
+      type: 'topic' as const,
+      metadata: { count, topic: tag }
+    }));
+
+  const seen = new Set<string>();
+  return [...base, ...dynamic].filter(space => {
+    if (seen.has(space.id)) return false;
+    seen.add(space.id);
+    return true;
+  });
+}
 
 type PostRecord = {
   id: string;

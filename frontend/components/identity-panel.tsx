@@ -3,13 +3,12 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type {
   BoardAlias,
-  CreateSessionResponse,
   GetAliasResponse,
   RegisterIdentityResponse,
   SessionTicket,
   UpsertAliasResponse
 } from '@board-app/shared';
-type HttpError = Error & { status?: number; payload?: any };
+type HttpError = Error & { status?: number; payload?: unknown };
 import { useToast } from './toast-provider';
 import { useIdentityContext } from '../context/identity-context';
 
@@ -71,13 +70,16 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   const registerLabel = displayIdentity ? 'Re-register' : 'Register';
   const { addToast } = useToast();
 
-  const raiseForStatus = (res: Response, payload: any, fallback: string) => {
-    if (!res.ok) {
-      const error = new Error(payload?.error ?? fallback) as HttpError;
-      error.status = res.status;
-      error.payload = payload;
-      throw error;
-    }
+  const raiseForStatus = (res: Response, payload: unknown, fallback: string) => {
+    if (res.ok) return;
+    const message =
+      typeof payload === 'object' && payload !== null && 'error' in payload
+        ? String((payload as { error?: unknown }).error ?? '')
+        : undefined;
+    const error = new Error(message || fallback) as HttpError;
+    error.status = res.status;
+    error.payload = payload;
+    throw error;
   };
 
   const handleSessionError = async (
@@ -90,7 +92,11 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
       if (refreshed) {
         return 'refreshed';
       }
-      setter(httpError.payload?.error || 'Session expired. Re-register identity.');
+      const message =
+        typeof httpError.payload === 'object' && httpError.payload !== null && 'error' in httpError.payload
+          ? String((httpError.payload as { error?: unknown }).error ?? 'Session expired. Re-register identity.')
+          : 'Session expired. Re-register identity.';
+      setter(message);
       setSession(null);
       return 'expired';
     }
@@ -102,7 +108,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
       setAliasBoardId('');
       setAliasValue('');
     }
-  }, [identity?.id]);
+  }, [identity, identity?.id]);
 
   useEffect(() => {
     setSessionStatus(null);

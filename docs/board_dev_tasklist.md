@@ -34,3 +34,8 @@ Tracking TODOs stemming from the latest product decisions. Update as work progre
 - [ ] Draft soft-launch playbook for first dorm cohort (success metrics, feedback loop).
 - [ ] Prepare dorm-level feature flags/toggles for controlled rollout.
 - [ ] Phase 1 instrumentation: activation, engagement, D2/D7 retention, qualitative feedback capture.
+- [x] Provide Phase 1 feature flag UI for fixed-radius/text-only toggles (`frontend/app/admin/phase/page.tsx`, `workers/src/index.ts`).
+
+## Media & UX
+- [x] Implement image upload guardrails (size/type checks, worker-side enforcement) (`workers/src/index.ts`, `frontend/components/phase-admin-panel.tsx`).
+- [ ] Redesign board-facing UI for production (layout, navigation, responsive polish).

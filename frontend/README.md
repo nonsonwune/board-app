@@ -33,3 +33,12 @@ Refer to `workers/README.md` for endpoint and migration details.
     ]
     ```
 - Cards may be capped per board/user and dismissed locally via the UI; dismissed state and impression counts persist in `localStorage`.
+
+## Phase 1 Launch Controls
+- Visit `/admin/phase` to view and adjust fixed-radius/text-only settings per board.
+- Provide the worker base URL and the `PHASE_ADMIN_TOKEN` (set in the worker) to fetch or update settings.
+- Phase 1 mode enforces a fixed radius and can disable images/text-only posts to match the MVP launch spec.
+
+## Image Upload Guardrails
+- Image uploads are disabled by default; the worker must expose `ENABLE_IMAGE_UPLOADS=true` before clients may attach images.
+- Even when enabled, the worker enforces file count (≤4), size (≤3 MB each), and MIME type (`image/jpeg`, `image/png`, `image/webp`) before accepting metadata.

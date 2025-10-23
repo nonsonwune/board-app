@@ -48,7 +48,17 @@ class BoundPrepared {
   async run() {
     this.db.prepareCalls.push({ sql: this.sql, params: this.params });
     if (this.sql.startsWith('INSERT INTO boards')) {
-      const [id, name, description, createdAt, radiusMeters = 1500, radiusState = null, radiusUpdatedAt = createdAt] = this.params;
+      const [
+        id,
+        name,
+        description,
+        createdAt,
+        radiusMeters = 1500,
+        radiusState = null,
+        radiusUpdatedAt = createdAt,
+        phaseMode = 'default',
+        textOnly = 0
+      ] = this.params;
       this.db.boards.set(id, {
         id,
         display_name: name,
@@ -56,7 +66,9 @@ class BoundPrepared {
         created_at: createdAt,
         radius_meters: radiusMeters ?? 1500,
         radius_state: typeof radiusState === 'string' ? radiusState : radiusState ? JSON.stringify(radiusState) : null,
-        radius_updated_at: radiusUpdatedAt ?? createdAt
+        radius_updated_at: radiusUpdatedAt ?? createdAt,
+        phase_mode: phaseMode,
+        text_only: textOnly
       });
     }
     if (this.sql.startsWith('INSERT INTO posts')) {
@@ -100,6 +112,17 @@ class BoundPrepared {
         trace_id: traceId,
         created_at: createdAt
       });
+    }
+    if (this.sql.startsWith('UPDATE boards SET phase_mode')) {
+      const [phaseMode, textOnly, radiusMeters, radiusState, radiusUpdatedAt, boardId] = this.params;
+      const board = this.db.boards.get(boardId);
+      if (board) {
+        board.phase_mode = phaseMode;
+        board.text_only = textOnly;
+        board.radius_meters = radiusMeters;
+        board.radius_state = radiusState;
+        board.radius_updated_at = radiusUpdatedAt;
+      }
     }
     if (this.sql.startsWith('UPDATE boards SET radius_meters')) {
       const [radiusMeters, radiusState, radiusUpdatedAt, boardId] = this.params;
@@ -366,7 +389,9 @@ describe('storage helpers', () => {
       BOARD_ROOM_DO: {} as any,
       PHASE_ONE_BOARDS: undefined,
       PHASE_ONE_TEXT_ONLY_BOARDS: undefined,
-      PHASE_ONE_RADIUS_METERS: undefined
+      PHASE_ONE_RADIUS_METERS: undefined,
+      PHASE_ADMIN_TOKEN: undefined,
+      ENABLE_IMAGE_UPLOADS: undefined
     };
     __resetSchemaForTests();
   });
@@ -655,5 +680,65 @@ describe('storage helpers', () => {
     const updated = env.BOARD_DB.boards.get(board.id);
     expect(updated?.radius_meters).toBe(900);
   });
+
+
+it('rejects image uploads when not enabled', async () => {
+  const request = new Request('https://unit.test/boards/image-guard/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      body: 'Image attempt',
+      images: [{ name: 'test.jpg', type: 'image/jpeg', size: 1024 }]
+    })
+  });
+  const ctx = {
+    waitUntil: (_: Promise<unknown>) => {}
+  } as ExecutionContext;
+  const response = await WorkerEntrypoint.fetch(request, env, ctx);
+  expect(response.status).toBe(403);
+  const payload = await response.json();
+  expect(payload.error).toMatch(/image uploads are currently disabled/i);
+});
+
+it('rejects image uploads for text-only boards', async () => {
+  env.PHASE_ONE_TEXT_ONLY_BOARDS = 'text-only-board';
+  env.ENABLE_IMAGE_UPLOADS = 'true';
+
+  const request = new Request('https://unit.test/boards/text-only-board/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      body: 'Hello',
+      images: [{ name: 'test.jpg', type: 'image/jpeg', size: 2048 }]
+    })
+  });
+  const ctx = {
+    waitUntil: (_: Promise<unknown>) => {}
+  } as ExecutionContext;
+  const response = await WorkerEntrypoint.fetch(request, env, ctx);
+  expect(response.status).toBe(403);
+  const payload = await response.json();
+  expect(payload.error).toMatch(/disabled for this board/i);
+});
+
+it('accepts valid image metadata when enabled', async () => {
+  env.ENABLE_IMAGE_UPLOADS = 'true';
+
+  const request = new Request('https://unit.test/boards/media/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      body: 'Post with image',
+      images: [{ id: 'hero', name: 'hero.jpg', type: 'image/jpeg', size: 409_600 }]
+    })
+  });
+  const ctx = {
+    waitUntil: (_: Promise<unknown>) => {}
+  } as ExecutionContext;
+  const response = await WorkerEntrypoint.fetch(request, env, ctx);
+  expect(response.status).toBe(201);
+  const payload = await response.json();
+  expect(payload.post.images).toEqual(['hero']);
+});
 
 });

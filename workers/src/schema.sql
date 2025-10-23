@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS boards (
   created_at INTEGER NOT NULL,
   radius_meters INTEGER NOT NULL DEFAULT 1500,
   radius_state TEXT,
-  radius_updated_at INTEGER
+  radius_updated_at INTEGER,
+  phase_mode TEXT NOT NULL DEFAULT 'default',
+  text_only INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS posts (
   id TEXT PRIMARY KEY,

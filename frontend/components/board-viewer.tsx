@@ -10,12 +10,53 @@ import type {
   GetAliasResponse,
   RegisterIdentityResponse,
   UpsertAliasResponse,
-  UpdateReactionResponse
+  UpdateReactionResponse,
+  ReactionAction,
+  BoardSpace
 } from '@board-app/shared';
 import { useBoardEvents } from '../hooks/use-board-events';
 import { useToast } from './toast-provider';
 import { useIdentityContext } from '../context/identity-context';
-type HttpError = Error & { status?: number; payload?: any };
+import { useAppChrome } from '../context/app-chrome-context';
+import InlineComposer from './feed/inline-composer';
+import LiveBanner from './feed/live-banner';
+import QuietState from './feed/quiet-state';
+import PostCard from './feed/post-card';
+import PostDetail from './feed/post-detail';
+import { formatBoardDistance } from '../lib/date';
+
+const DEFAULT_SPACE_TABS = ['Home', 'Student Life', 'Events', 'Sports'];
+interface LocalReply {
+  id: string;
+  postId: string;
+  author: string;
+  body: string;
+  createdAt: number;
+  pending?: boolean;
+}
+
+function createSeedReplies(post: BoardPost): LocalReply[] {
+  const snippet = post.body.length > 60 ? `${post.body.slice(0, 57)}…` : post.body;
+  const referenceAuthor = post.alias || post.author || post.pseudonym || 'Neighbor';
+  const now = Date.now();
+  return [
+    {
+      id: `${post.id}-seed-1`,
+      postId: post.id,
+      author: 'Board Guide',
+      body: `Thanks for sharing, ${referenceAuthor}. Curious what others think about “${snippet}”.`,
+      createdAt: now - 18 * 60 * 1000
+    },
+    {
+      id: `${post.id}-seed-2`,
+      postId: post.id,
+      author: 'Local Voice',
+      body: 'I’ve noticed the same thing around campus. Keep the updates coming!',
+      createdAt: now - 12 * 60 * 1000
+    }
+  ];
+}
+type HttpError = Error & { status?: number; payload?: unknown };
 
 interface BoardViewerProps {
   boardId: string;
@@ -55,6 +96,7 @@ function loadSponsoredQuietCards(): SponsoredQuietCard[] {
 const SPONSORED_QUIET_CARDS = loadSponsoredQuietCards();
 const SPONSORED_DISMISSED_STORAGE_KEY = 'boardapp:sponsoredQuiet:dismissed';
 const SPONSORED_IMPRESSIONS_STORAGE_KEY = 'boardapp:sponsoredQuiet:impressions';
+const MAX_POST_CHARACTERS = 300;
 
 export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
@@ -68,9 +110,12 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     refreshSession,
     hydrated: identityHydrated
   } = useIdentityContext();
-  const { events, status, error } = useBoardEvents(boardId, { workerBaseUrl });
+  const { setTopBar, resetTopBar, setFab, resetFab } = useAppChrome();
+  const { events, status, error, lastHeartbeat } = useBoardEvents(boardId, { workerBaseUrl });
   const [boardMeta, setBoardMeta] = useState<BoardSummary | null>(null);
   const [posts, setPosts] = useState<BoardPost[]>([]);
+  const [connectionCount, setConnectionCount] = useState<number>(0);
+  const [backendSpaces, setBackendSpaces] = useState<BoardSpace[]>([]);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [feedLoading, setFeedLoading] = useState<boolean>(true);
   const [identity, setIdentity] = useState<RegisterIdentityResponse['user'] | null>(sharedIdentity ?? null);
@@ -86,6 +131,17 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [aliasLoading, setAliasLoading] = useState<boolean>(false);
   const [aliasInput, setAliasInput] = useState(sharedAlias?.alias ?? '');
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [composerBody, setComposerBody] = useState('');
+  const [composerAuthor, setComposerAuthor] = useState('');
+  const [composerSubmitting, setComposerSubmitting] = useState(false);
+  const [selectedPost, setSelectedPost] = useState<BoardPost | null>(null);
+  const [repliesByPostId, setRepliesByPostId] = useState<Record<string, LocalReply[]>>({});
+  const [replySubmitting, setReplySubmitting] = useState(false);
+  const [activeSpaceId, setActiveSpaceId] = useState('home');
+  const sessionToken = session?.token ?? null;
+  const { addToast } = useToast();
+  const [heartbeatTick, setHeartbeatTick] = useState(() => Date.now());
   const quietPrompts = useMemo(
     () => [
       {
@@ -103,15 +159,236 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     ],
     []
   );
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setHeartbeatTick(Date.now()), 15000);
+    return () => window.clearInterval(interval);
+  }, []);
   const quietModePrompt = useMemo(() => quietPrompts[Math.floor(Math.random() * quietPrompts.length)], [quietPrompts]);
+  const openComposer = useCallback(() => {
+    if (!identity || !sessionToken) {
+      addToast({ title: 'Register identity', description: 'Create a pseudonym to start posting.' });
+      return;
+    }
+    setComposerOpen(true);
+  }, [identity, sessionToken, addToast]);
+
+  const postsPerMinute = useMemo(() => {
+    if (events.length === 0) return 0;
+    const windowStart = Date.now() - 60_000;
+    let count = 0;
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event.timestamp < windowStart) break;
+      if (event.event === 'post.created') {
+        count += 1;
+      }
+    }
+    return count;
+  }, [events]);
+
+  const quietSuggestions = useMemo(
+    () =>
+      quietPrompts.map((prompt, index) => ({
+        id: `prompt-${index}`,
+        label: prompt.title,
+        onSelect: openComposer
+      })),
+    [quietPrompts, openComposer]
+  );
+
+  const topicTags = useMemo(() => {
+    const counts = new Map<string, number>();
+    const hashtagRegex = /#[\p{L}0-9_-]+/gu;
+    posts.forEach(post => {
+      const matches = post.body.match(hashtagRegex);
+      if (!matches) return;
+      matches.forEach(tag => {
+        const normalized = tag.toLowerCase();
+        counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+      });
+    });
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([tag]) => tag)
+      .slice(0, 3);
+  }, [posts]);
+
+  const viewSpaces = useMemo(() => {
+    const baseTabs = DEFAULT_SPACE_TABS.map(label => ({
+      id: label.toLowerCase().replace(/\s+/g, '-'),
+      label,
+      type: 'default' as const
+    }));
+
+    const backendTabs = backendSpaces.map(space => ({
+      id: space.id,
+      label: space.label,
+      type: space.type ?? 'custom',
+      topic: typeof space.metadata?.topic === 'string' ? space.metadata.topic : space.label
+    }));
+
+    const dynamicTabs = topicTags
+      .filter(tag => !backendTabs.some(space => space.label.toLowerCase() === tag.toLowerCase()))
+      .map(tag => ({
+        id: `topic-${tag.slice(1).toLowerCase()}`,
+        label: tag,
+        type: 'topic' as const,
+        topic: tag
+      }));
+
+    const merged = [baseTabs[0], ...backendTabs, ...dynamicTabs, ...baseTabs.slice(1)];
+    const seen = new Set<string>();
+    return merged.filter(tab => {
+      if (seen.has(tab.id)) return false;
+      seen.add(tab.id);
+      return true;
+    });
+  }, [backendSpaces, topicTags]);
+
+  useEffect(() => {
+    if (viewSpaces.length === 0) return;
+    if (!viewSpaces.some(tab => tab.id === activeSpaceId)) {
+      setActiveSpaceId(viewSpaces[0].id);
+    }
+  }, [viewSpaces, activeSpaceId]);
+
+  const handleSpaceSelect = useCallback(
+    (tabId: string) => {
+      setActiveSpaceId(tabId);
+      const tab = viewSpaces.find(space => space.id === tabId);
+      if (tab?.type === 'topic') {
+        addToast({ title: 'Topic filter active', description: `Filtering posts tagged ${tab.label}.` });
+      }
+    },
+    [viewSpaces, addToast]
+  );
+
+  const filteredPosts = useMemo(() => {
+    const activeTab = viewSpaces.find(tab => tab.id === activeSpaceId);
+    if (!activeTab || activeTab.type === 'default') return posts;
+    if (activeTab.type === 'topic') {
+      const needle = (activeTab.topic ?? activeTab.label).toLowerCase();
+      return posts.filter(post => post.body.toLowerCase().includes(needle));
+    }
+    if (activeTab.type === 'events') {
+      return posts.filter(post => /event|meet|tonight|today|tomorrow/i.test(post.body));
+    }
+    return posts;
+  }, [posts, viewSpaces, activeSpaceId]);
+
+  const statusLabel = useMemo(() => {
+    if (status === 'connected') return 'Live';
+    if (status === 'connecting') return 'Connecting…';
+    if (status === 'error') return 'Retrying…';
+    return 'Offline';
+  }, [status]);
+
+  const chromeConnectionStatus = useMemo(() => {
+    if (status === 'connected') return 'connected';
+    if (status === 'connecting') return 'connecting';
+    if (status === 'error') return 'error';
+    return 'offline';
+  }, [status]);
+
+  const heartbeatAgeMs = useMemo(() => (lastHeartbeat ? heartbeatTick - lastHeartbeat : null), [lastHeartbeat, heartbeatTick]);
+  const isHeartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > 30_000;
+
+  const remainingCharacters = MAX_POST_CHARACTERS - composerBody.length;
+  const showQuietState = !feedLoading && !feedError && filteredPosts.length === 0;
+  const showDevTools = process.env.NODE_ENV !== 'production';
+  const activeReplies = selectedPost ? repliesByPostId[selectedPost.id] ?? [] : [];
+  const showLiveBanner = status === 'connected' && !isHeartbeatStale && (connectionCount > 1 || postsPerMinute > 0);
+
+  const handleComposerClose = useCallback(() => {
+    if (composerSubmitting) return;
+    setComposerOpen(false);
+  }, [composerSubmitting]);
+
+  async function handleComposerSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (composerSubmitting) return;
+    setComposerSubmitting(true);
+    const success = await createPost(composerBody, composerAuthor);
+    if (success) {
+      setComposerBody('');
+      setComposerAuthor('');
+      setComposerOpen(false);
+    }
+    setComposerSubmitting(false);
+  }
   const [dismissedSponsored, setDismissedSponsored] = useState<Set<string>>(() => new Set());
   const [sponsoredImpressions, setSponsoredImpressions] = useState<Record<string, number>>(() => ({}));
   const lastSponsoredImpressionRef = useRef<string | null>(null);
   const [sponsoredStorageHydrated, setSponsoredStorageHydrated] = useState(false);
-  const { addToast } = useToast();
   const isPhaseOneBoard = boardMeta?.phaseMode === 'phase1';
   const isTextOnlyBoard = boardMeta?.textOnly ?? false;
   const radiusMetersDisplay = boardMeta?.radiusMeters ? Math.round(boardMeta.radiusMeters) : null;
+  const boardDistanceLabel = boardMeta ? formatBoardDistance(boardMeta.radiusMeters) : null;
+  const friendlyBoardName = useMemo(() => {
+    if (boardMeta?.displayName) return boardMeta.displayName;
+    const cleaned = boardId.replace(/[-_]+/g, ' ').trim();
+    if (!cleaned) return boardId;
+    return cleaned.replace(/\b\w/g, char => char.toUpperCase());
+  }, [boardMeta?.displayName, boardId]);
+
+  useEffect(() => {
+    const connectionStatus = isHeartbeatStale ? 'connecting' : chromeConnectionStatus;
+    const connectionLabel =
+      status === 'connected'
+        ? isHeartbeatStale
+          ? 'Reconnecting…'
+          : `Live · ${connectionCount} nearby`
+        : statusLabel;
+    const chromeSpaceTabs = viewSpaces.map(tab => ({
+      id: tab.id,
+      label: tab.label,
+      isActive: tab.id === activeSpaceId
+    }));
+
+    setTopBar({
+      show: true,
+      board: {
+        name: friendlyBoardName,
+        radiusLabel: boardDistanceLabel ?? undefined,
+        isLive: status === 'connected'
+      },
+      connection: {
+        status: connectionStatus,
+        label: connectionLabel,
+        showAdminLock: isPhaseOneBoard,
+        showDnd: false,
+        onPress: () => addToast({ title: connectionLabel, description: 'Realtime status updates in progress.' })
+      },
+      spaces: chromeSpaceTabs.length
+        ? {
+            tabs: chromeSpaceTabs,
+            activeTabId: activeSpaceId,
+            onSelect: handleSpaceSelect
+          }
+        : null
+    });
+
+    return () => {
+      resetTopBar();
+    };
+  }, [friendlyBoardName, boardDistanceLabel, status, statusLabel, chromeConnectionStatus, isPhaseOneBoard, setTopBar, resetTopBar, connectionCount, viewSpaces, activeSpaceId, handleSpaceSelect, addToast, isHeartbeatStale]);
+
+  useEffect(() => {
+    const canCompose = Boolean(identity && sessionToken);
+    setFab({
+      label: 'Post',
+      onPress: openComposer,
+      disabled: !canCompose,
+      tooltip: canCompose ? 'Share an update with the board' : 'Register an identity to post',
+      visible: true,
+      variant: status === 'connected' ? 'live' : 'primary'
+    });
+
+    return () => {
+      resetFab();
+    };
+  }, [identity, sessionToken, status, openComposer, setFab, resetFab]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -194,13 +471,6 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     }
   }, [identity, sharedIdentity, setSharedIdentity, identityHydrated]);
 
-  const statusLabel = useMemo(() => {
-    if (status === 'connected') return 'Live';
-    if (status === 'connecting') return 'Connecting…';
-    if (status === 'error') return 'Retrying…';
-    return 'Offline';
-  }, [status]);
-
   const badgeTone = useMemo(() => {
     switch (status) {
       case 'connected':
@@ -252,7 +522,6 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const sortedEvents = useMemo(() => events.slice().sort((a, b) => a.timestamp - b.timestamp), [events]);
 
   const effectiveIdentity = identityHydrated ? identity : null;
-  const sessionToken = session?.token ?? null;
   const buildHeaders = useCallback(
     (base: HeadersInit = {}) => {
       const headers = new Headers(base);
@@ -265,13 +534,16 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   );
   const registerLabel = effectiveIdentity ? 'Re-register' : 'Register';
 
-  const raiseForStatus = useCallback((res: Response, payload: any, fallback: string) => {
-    if (!res.ok) {
-      const error = new Error(payload?.error ?? fallback) as HttpError;
-      error.status = res.status;
-      error.payload = payload;
-      throw error;
-    }
+  const raiseForStatus = useCallback((res: Response, payload: unknown, fallback: string) => {
+    if (res.ok) return;
+    const message =
+      typeof payload === 'object' && payload !== null && 'error' in payload
+        ? String((payload as { error?: unknown }).error ?? '')
+        : undefined;
+    const error = new Error(message || fallback) as HttpError;
+    error.status = res.status;
+    error.payload = payload;
+    throw error;
   }, []);
 
   const handleSponsoredDismiss = useCallback((cardId: string, cardTitle: string) => {
@@ -287,6 +559,40 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     addToast({ title: 'Opening sponsor', description: card.title });
   }, [addToast]);
 
+  const sponsoredQuietContent = useMemo(() => {
+    if (!sponsoredQuietCard) return null;
+    return (
+      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-left">
+        <p className="text-sm font-semibold text-slate-200">{sponsoredQuietCard.title}</p>
+        <p className="mt-2 text-xs text-slate-400">{sponsoredQuietCard.body}</p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <a
+            href={sponsoredQuietCard.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={event => {
+              event.stopPropagation();
+              handleSponsoredCtaClick(sponsoredQuietCard);
+            }}
+            className="inline-flex items-center gap-1 rounded-full bg-sky-500 px-3 py-1 text-xs font-semibold text-slate-950 transition hover:bg-sky-400"
+          >
+            {sponsoredQuietCard.cta}
+          </a>
+          <button
+            type="button"
+            onClick={event => {
+              event.stopPropagation();
+              handleSponsoredDismiss(sponsoredQuietCard.id, sponsoredQuietCard.title);
+            }}
+            className="inline-flex items-center gap-1 rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  }, [sponsoredQuietCard, handleSponsoredCtaClick, handleSponsoredDismiss]);
+
   const handleSessionError = useCallback(
     async (error: unknown, workerBaseUrl: string, setMessage?: (msg: string) => void) => {
       const httpError = error as HttpError;
@@ -296,7 +602,10 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           return 'refreshed';
         }
         setSession(null);
-        const message = httpError.payload?.error || 'Session expired. Re-register identity.';
+        const message =
+          typeof httpError.payload === 'object' && httpError.payload !== null && 'error' in httpError.payload
+            ? String((httpError.payload as { error?: unknown }).error ?? 'Session expired. Re-register identity.')
+            : 'Session expired. Re-register identity.';
         if (setMessage) {
           setMessage(message);
         } else {
@@ -309,6 +618,53 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     [refreshSession, setSession, setIdentityError]
   );
 
+  const ensureReplies = useCallback((post: BoardPost) => {
+    setRepliesByPostId(prev => {
+      if (prev[post.id]) return prev;
+      return { ...prev, [post.id]: createSeedReplies(post) };
+    });
+  }, []);
+
+  const handleCreateReply = useCallback(
+    async (post: BoardPost, message: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      const author = alias?.alias || identity?.pseudonym || 'You';
+      const optimistic: LocalReply = {
+        id: `local-${Date.now()}`,
+        postId: post.id,
+        author,
+        body: trimmed,
+        createdAt: Date.now(),
+        pending: true
+      };
+
+      setRepliesByPostId(prev => {
+        const existing = prev[post.id] ?? [];
+        return { ...prev, [post.id]: [...existing, optimistic] };
+      });
+
+      setReplySubmitting(true);
+      addToast({ title: 'Reply posted', description: 'Replies sync is coming soon.' });
+
+      try {
+        await new Promise(resolve => setTimeout(resolve, 650));
+        setRepliesByPostId(prev => {
+          const existing = prev[post.id] ?? [];
+          return {
+            ...prev,
+            [post.id]: existing.map(reply =>
+              reply.id === optimistic.id ? { ...reply, pending: false } : reply
+            )
+          };
+        });
+      } finally {
+        setReplySubmitting(false);
+      }
+    },
+    [alias?.alias, identity?.pseudonym, addToast]
+  );
+
   const boardAliasLookup = useMemo(() => {
     const map = new Map<string, string>();
     posts.forEach(post => {
@@ -318,6 +674,94 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     });
     return map;
   }, [posts]);
+
+  const sendReaction = useCallback(
+    async (postId: string, action: ReactionAction, overrideUserId?: string) => {
+      const userId = overrideUserId?.trim() || identity?.id || reactionUserId.trim();
+      if (!postId) {
+        setReactionStatus('Select a post to react to.');
+        return;
+      }
+      if (!userId) {
+        const message = 'Provide a user ID or register an identity first.';
+        setReactionStatus(message);
+        addToast({ title: 'Identity required', description: message });
+        return;
+      }
+      if (!sessionToken) {
+        const message = 'Session expired. Re-register identity.';
+        setReactionStatus(message);
+        addToast({ title: 'Session expired', description: message });
+        return;
+      }
+
+      setReactionLoading(true);
+      setReactionStatus(null);
+      setReactionPostId(postId);
+
+      const attempt = async () => {
+        const res = await fetch(
+          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(postId)}/reactions`,
+          {
+            method: 'POST',
+            headers: buildHeaders({ 'content-type': 'application/json' }),
+            body: JSON.stringify({ userId, action })
+          }
+        );
+
+        const payload = await res.json().catch(() => ({}));
+        raiseForStatus(res, payload, `Failed to update reaction (${res.status})`);
+
+        const body = payload as UpdateReactionResponse;
+        setReactionStatus(
+          `Acknowledged • Post ${body.postId}: 👍 ${body.reactions.likeCount} / 👎 ${body.reactions.dislikeCount}`
+        );
+        setPosts(prev =>
+          prev.map(post =>
+            post.id === body.postId
+              ? {
+                  ...post,
+                  reactionCount: body.reactions.total,
+                  likeCount: body.reactions.likeCount,
+                  dislikeCount: body.reactions.dislikeCount
+                }
+              : post
+          )
+        );
+      };
+
+      try {
+        await attempt();
+      } catch (error) {
+        const outcome = await handleSessionError(error, workerBaseUrl, msg => setReactionStatus(msg));
+        if (outcome === 'refreshed') {
+          try {
+            await attempt();
+            return;
+          } catch (retryError) {
+            setReactionStatus((retryError as Error).message ?? 'Failed to send reaction');
+          }
+        }
+        if (outcome !== 'expired') {
+          setReactionStatus((error as Error).message ?? 'Failed to send reaction');
+        }
+      } finally {
+        setReactionLoading(false);
+      }
+    },
+    [
+      identity,
+      reactionUserId,
+      sessionToken,
+      addToast,
+      workerBaseUrl,
+      boardId,
+      buildHeaders,
+      raiseForStatus,
+      handleSessionError,
+      setReactionStatus
+    ]
+  );
 
   const fetchFeed = useCallback(
     async (signal?: AbortSignal) => {
@@ -333,6 +777,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         if (signal?.aborted) return;
         setBoardMeta(body.board ?? null);
         setPosts(body.posts ?? []);
+        setConnectionCount(body.realtimeConnections ?? 0);
+        setBackendSpaces(body.spaces ?? []);
         setFeedError(null);
       } catch (err) {
         if (signal?.aborted) return;
@@ -346,6 +792,55 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       }
     },
     [boardId, workerBaseUrl]
+  );
+
+  const createPost = useCallback(
+    async (message: string, author?: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) {
+        addToast({ title: 'Message required', description: 'Enter a post before submitting.' });
+        return false;
+      }
+      if (!identity || !sessionToken) {
+        addToast({ title: 'Session needed', description: 'Register or refresh your identity first.' });
+        return false;
+      }
+
+      const resolvedAuthor = author?.trim() || alias?.alias || identity.pseudonym || undefined;
+
+      const attempt = async () => {
+        const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts`, {
+          method: 'POST',
+          headers: buildHeaders({ 'content-type': 'application/json' }),
+          body: JSON.stringify({ body: trimmed, author: resolvedAuthor, userId: identity.id })
+        });
+        const payload = await res.json().catch(() => ({}));
+        raiseForStatus(res, payload, `Failed to create post (${res.status})`);
+        await fetchFeed();
+        addToast({ title: 'Post published', description: 'Shared with everyone on this board.' });
+      };
+
+      try {
+        await attempt();
+        return true;
+      } catch (err) {
+        const outcome = await handleSessionError(err, workerBaseUrl, msg => setIdentityError(msg));
+        if (outcome === 'refreshed') {
+          try {
+            await attempt();
+            return true;
+          } catch (retryError) {
+            console.error('[ui] failed to create post', retryError);
+            addToast({ title: 'Post failed', description: 'See console for details.' });
+          }
+        } else if (outcome !== 'expired') {
+          console.error('[ui] failed to create post', err);
+          addToast({ title: 'Post failed', description: 'See console for details.' });
+        }
+      }
+      return false;
+    },
+    [identity, sessionToken, alias?.alias, workerBaseUrl, boardId, buildHeaders, raiseForStatus, fetchFeed, addToast, handleSessionError, setIdentityError]
   );
 
   useEffect(() => {
@@ -367,7 +862,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       return;
     }
 
-    if (sharedAlias && sharedAlias.userId === identity.id) {
+    const identityId = identity.id;
+
+    if (sharedAlias && sharedAlias.userId === identityId) {
       setAlias(sharedAlias);
       setAliasInput(sharedAlias.alias);
       return;
@@ -377,7 +874,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     async function fetchAlias() {
       try {
         const res = await fetch(
-          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases?userId=${encodeURIComponent(identity.id)}`,
+          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases?userId=${encodeURIComponent(identityId)}`,
           {
             headers: buildHeaders()
           }
@@ -414,7 +911,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [identity, boardId, workerBaseUrl, sharedAlias, sessionToken]);
+  }, [identity, boardId, workerBaseUrl, sharedAlias, sessionToken, buildHeaders, raiseForStatus, handleSessionError]);
 
   useEffect(() => {
     if (!identityHydrated) return;
@@ -433,13 +930,19 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     if (alias && (!sharedAlias || sharedAlias.id !== alias.id || sharedAlias.alias !== alias.alias)) {
       setSharedAlias(boardId, alias);
     }
-  }, [alias, sharedAlias, boardId, identity?.id, setSharedAlias, identityHydrated]);
+  }, [alias, sharedAlias, boardId, identity, identity?.id, setSharedAlias, identityHydrated]);
 
   useEffect(() => {
     if (alias?.alias) {
       setAliasInput(alias.alias);
     }
   }, [alias]);
+
+  useEffect(() => {
+    if (selectedPost) {
+      ensureReplies(selectedPost);
+    }
+  }, [selectedPost, ensureReplies]);
 
   useEffect(() => {
     if (posts.length === 0) {
@@ -470,19 +973,20 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         reactions?: { total: number; likeCount: number; dislikeCount: number };
       };
       if (!payload?.postId || !payload?.reactions) return;
+      const reactions = payload.reactions;
       setPosts(prev =>
         prev.map(post => {
           if (post.id !== payload.postId) return post;
           return {
             ...post,
-            reactionCount: payload.reactions.total,
-            likeCount: payload.reactions.likeCount,
-            dislikeCount: payload.reactions.dislikeCount
+            reactionCount: reactions.total,
+            likeCount: reactions.likeCount,
+            dislikeCount: reactions.dislikeCount
           };
         })
       );
       setReactionStatus(
-        `Realtime update • Post ${payload.postId}: 👍 ${payload.reactions.likeCount} / 👎 ${payload.reactions.dislikeCount}`
+        `Realtime update • Post ${payload.postId}: 👍 ${reactions.likeCount} / 👎 ${reactions.dislikeCount}`
       );
     }
   }, [events]);
@@ -539,61 +1043,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       return;
     }
 
-    if (!userId) {
-      setReactionStatus('Provide a user ID or register an identity first.');
-      return;
-    }
-
-    if (!sessionToken) {
-      setReactionStatus('Session expired. Re-register identity.');
-      return;
-    }
-
     if (!action) {
       setReactionStatus('Choose a reaction action.');
       return;
     }
-
-    setReactionLoading(true);
-    setReactionStatus(null);
-
-    const attempt = async () => {
-      const res = await fetch(
-        `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(reactionPostId)}/reactions`,
-        {
-          method: 'POST',
-          headers: buildHeaders({ 'content-type': 'application/json' }),
-          body: JSON.stringify({ userId, action })
-        }
-      );
-
-      const payload = await res.json().catch(() => ({}));
-      raiseForStatus(res, payload, `Failed to update reaction (${res.status})`);
-
-      const body = payload as UpdateReactionResponse;
-      setReactionStatus(
-        `Acknowledged • Post ${body.postId}: 👍 ${body.reactions.likeCount} / 👎 ${body.reactions.dislikeCount}`
-      );
-    };
-
-    try {
-      await attempt();
-    } catch (error) {
-      const outcome = await handleSessionError(error, workerBaseUrl, msg => setReactionStatus(msg));
-      if (outcome === 'refreshed') {
-        try {
-          await attempt();
-          return;
-        } catch (retryError) {
-          setReactionStatus((retryError as Error).message ?? 'Failed to send reaction');
-        }
-      }
-      if (outcome !== 'expired') {
-        setReactionStatus((error as Error).message ?? 'Failed to send reaction');
-      }
-    } finally {
-      setReactionLoading(false);
-    }
+    await sendReaction(reactionPostId, action as ReactionAction, userId);
   }
 
   async function handleUpsertAlias(event: FormEvent<HTMLFormElement>) {
@@ -706,50 +1160,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     const formData = new FormData(form);
     const body = (formData.get('postBody') as string)?.trim();
     const author = (formData.get('postAuthor') as string)?.trim();
-
-    if (!body) {
-      addToast({ title: 'Message required', description: 'Enter a post before submitting.' });
-      return;
-    }
-
-    if (!identity || !sessionToken) {
-      addToast({ title: 'Session needed', description: 'Register or refresh your identity first.' });
-      return;
-    }
-
-    const attempt = async () => {
-      const resolvedAuthor = author || alias?.alias || identity?.pseudonym || undefined;
-      const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts`, {
-        method: 'POST',
-        headers: buildHeaders({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ body, author: resolvedAuthor, userId: identity?.id || undefined })
-      });
-      const payload = await res.json().catch(() => ({}));
-      raiseForStatus(res, payload, `Failed to create post (${res.status})`);
+    const success = await createPost(body ?? '', author);
+    if (success) {
       form.reset();
-      await fetchFeed();
-      addToast({ title: 'Post published', description: 'Shared with everyone on this board.' });
-    };
-
-    try {
-      await attempt();
-    } catch (err) {
-      const outcome = await handleSessionError(err, workerBaseUrl, msg => setIdentityError(msg));
-      if (outcome === 'refreshed') {
-        try {
-          await attempt();
-          return;
-        } catch (retryError) {
-          console.error('[ui] failed to create post', retryError);
-          addToast({ title: 'Post failed', description: 'See console for details.' });
-        }
-      }
-      if (outcome === 'expired') {
-        addToast({ title: 'Session expired', description: 'Re-register identity to keep posting.' });
-        return;
-      }
-      console.error('[ui] failed to create post', err);
-      addToast({ title: 'Post failed', description: 'See console for details.' });
     }
   }
 
@@ -823,6 +1236,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         )}
 
         <section className="mt-10">
+          {showDevTools && (
+            <>
           <form onSubmit={handleRegisterIdentity} className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
             <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Register Identity</h2>
             <p className="mt-2 text-xs text-slate-500">
@@ -973,119 +1388,96 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             </div>
           </form>
 
-          <h2 className="text-lg font-semibold text-slate-200">Recent Posts</h2>
-        {feedError && (
-          <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">{feedError}</p>
-        )}
-        {feedLoading && !feedError && (
-          <p className="mt-4 text-sm text-slate-500">Loading posts…</p>
-        )}
-        {!feedLoading && effectiveIdentity && !sessionToken && (
-          <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-            <p>Your session expired. Re-link your Access identity to continue participating.</p>
-            <Link
-              href="/profile"
-              className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-amber-200 underline-offset-4 hover:text-amber-100 hover:underline"
-            >
-              Re-link session →
-            </Link>
-          </div>
-        )}
-        {!feedLoading && !feedError && posts.length > 0 && posts.length < 3 && quietModePrompt && (
-          <div className="mt-4 rounded-xl border border-dashed border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-300">
-            <h3 className="text-base font-semibold text-slate-200">{quietModePrompt.title}</h3>
-            <p className="mt-2 text-sm text-slate-400">{quietModePrompt.body}</p>
-            <button
-              type="button"
-              onClick={() => {
-                addToast({ title: 'Ready to post?', description: 'Share something with your board.' });
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }}
-              className="mt-3 inline-flex items-center gap-1 rounded-md border border-sky-500/40 px-3 py-1 text-xs uppercase tracking-[2px] text-sky-300 transition hover:border-sky-400 hover:text-sky-100"
-            >
-              Create a post →
-            </button>
-          </div>
-        )}
-        {!feedLoading && !feedError && posts.length < 3 && sponsoredQuietCard && (
-          <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-6 text-sm text-slate-200">
-            <div className="flex items-center justify-between text-[11px] uppercase tracking-[2px] text-emerald-300">
-              <span>Sponsored</span>
-              <button
-                type="button"
-                onClick={() => handleSponsoredDismiss(sponsoredQuietCard.id, sponsoredQuietCard.title)}
-                className="rounded border border-emerald-500/40 px-2 py-1 text-[10px] uppercase tracking-[2px] text-emerald-200 transition hover:border-emerald-400 hover:text-emerald-100"
-              >
-                Dismiss
-              </button>
-            </div>
-            <h3 className="mt-3 text-lg font-semibold text-emerald-200">{sponsoredQuietCard.title}</h3>
-            <p className="mt-2 text-sm text-emerald-100/80">{sponsoredQuietCard.body}</p>
-            <a
-              href={sponsoredQuietCard.href}
-              target={/^https?:\/\//i.test(sponsoredQuietCard.href) ? '_blank' : undefined}
-              rel={/^https?:\/\//i.test(sponsoredQuietCard.href) ? 'noopener noreferrer' : undefined}
-              onClick={() => handleSponsoredCtaClick(sponsoredQuietCard)}
-              className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-emerald-200 underline decoration-emerald-500/60 underline-offset-4 transition hover:text-emerald-100"
-            >
-              {sponsoredQuietCard.cta || 'Learn more'} <span aria-hidden>→</span>
-            </a>
-          </div>
-        )}
-        {!feedLoading && posts.length === 0 && !feedError && (
-          <div className="mt-4 rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center text-sm text-slate-500">
-            No posts yet. Use the form above to create one.
-          </div>
-        )}
-          <div className="mt-4 space-y-4">
-            {posts.map(post => {
-              const isMine = effectiveIdentity?.id && post.userId === effectiveIdentity.id;
-              const aliasLabel = post.alias || post.author || post.pseudonym || 'Anon';
-              const aliasClasses = post.alias
-                ? 'rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-sky-200'
-                : 'rounded border border-slate-800 bg-slate-950/70 px-1.5 py-0.5 text-slate-200';
-              return (
-                <article
-                  key={post.id}
-                  className={`rounded-xl border bg-slate-900/40 p-4 shadow-sm transition ${
-                    isMine
-                      ? 'border-emerald-500/60 shadow-emerald-500/20'
-                      : 'border-slate-800 shadow-slate-950/20'
-                  }`}
-                >
-                  <header className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
-                    <div className="flex flex-col">
-                      <span className="font-semibold text-slate-200">{post.author || 'Anon'}</span>
-                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                        {post.userId && (
-                          <span className="font-mono text-slate-600">#{post.userId.slice(0, 8)}</span>
-                        )}
-                        <span className="flex items-center gap-1 text-slate-400">
-                          <span className="text-[10px] uppercase tracking-[2px] text-slate-500">Alias</span>
-                          <span className={aliasClasses}>{aliasLabel}</span>
-                        </span>
-                        {isMine && (
-                          <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-medium text-emerald-300">
-                            You
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <time className="font-medium text-slate-300">
-                      {new Date(post.createdAt).toLocaleString()}
-                    </time>
-                  </header>
-                  <p className="mt-3 text-sm text-slate-100">{post.body}</p>
-                  <footer className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-500">
-                    <span>👍 {post.likeCount}</span>
-                    <span>👎 {post.dislikeCount}</span>
-                    <span>Total {post.reactionCount}</span>
-                  </footer>
-                </article>
-              );
-            })}
-          </div>
+          </>
+          )}
 
+          <section className="mt-10 space-y-4">
+            <InlineComposer
+              disabled={!identity || !sessionToken}
+              onOpen={openComposer}
+              identityLabel={alias?.alias ?? identity?.pseudonym ?? null}
+              remainingCharacters={MAX_POST_CHARACTERS}
+              textOnly={isTextOnlyBoard}
+            />
+            {showLiveBanner && (
+              <LiveBanner
+                connectionCount={connectionCount}
+                postsPerMinute={postsPerMinute}
+                onActivate={() =>
+                  addToast({
+                    title: 'Live pin coming soon',
+                    description: 'Live pinning will land in a future milestone.'
+                  })
+                }
+              />
+            )}
+            {feedError && (
+              <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+                {feedError}
+              </div>
+            )}
+            {feedLoading && !feedError && (
+              <div className="space-y-3">
+                {[0, 1, 2].map(index => (
+                  <div key={index} className="h-32 rounded-2xl border border-slate-800 bg-slate-900/40 animate-pulse" />
+                ))}
+              </div>
+            )}
+            {!feedLoading && effectiveIdentity && !sessionToken && (
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
+                <p>Your session expired. Re-link your Access identity to continue participating.</p>
+                <Link
+                  href="/profile"
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-amber-200 underline-offset-4 hover:text-amber-100 hover:underline"
+                >
+                  Re-link session →
+                </Link>
+              </div>
+            )}
+            {!feedLoading && !feedError && filteredPosts.map(post => (
+              <PostCard
+                key={post.id}
+                post={post}
+                boardName={friendlyBoardName}
+                distanceLabel={boardDistanceLabel}
+                isHot={typeof post.hotRank === 'number' && post.hotRank <= 120}
+                onLike={() => sendReaction(post.id, 'like')}
+                onDislike={() => sendReaction(post.id, 'dislike')}
+                onReply={() => {
+                  ensureReplies(post);
+                  setSelectedPost(post);
+                }}
+                onShare={() => {
+                  const shareUrl = `${workerBaseUrl}/boards/${boardId}/posts/${post.id}`;
+                  navigator.clipboard
+                    ?.writeText(shareUrl)
+                    .then(() => addToast({ title: 'Link copied', description: 'Share it with your board.' }))
+                    .catch(() => addToast({ title: 'Unable to copy', description: 'Copy manually for now.' }));
+                }}
+                onMore={() =>
+                  addToast({
+                    title: 'More actions coming soon',
+                    description: 'Flag, mute, and block arrive shortly.'
+                  })
+                }
+                onOpen={() => {
+                  ensureReplies(post);
+                  setSelectedPost(post);
+                }}
+              />
+            ))}
+            {showQuietState && (
+              <QuietState
+                title={quietModePrompt?.title}
+                subtitle={quietModePrompt?.body}
+                suggestions={quietSuggestions}
+                sponsored={sponsoredQuietContent}
+              />
+            )}
+          </section>
+
+          {showDevTools && (
+            <>
           <form onSubmit={handleSendReaction} className="mt-8 mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
             <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Send Test Reaction</h2>
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
@@ -1206,8 +1598,74 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
               </div>
             )}
           </div>
+          </>
+          )}
         </section>
       </div>
+      {composerOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm sm:items-center">
+          <button
+            type="button"
+            className="absolute inset-0"
+            onClick={handleComposerClose}
+            aria-label="Close composer"
+          />
+          <div className="relative z-10 w-full max-w-lg rounded-t-3xl border border-slate-800 bg-slate-900 p-6 shadow-xl sm:rounded-3xl">
+            <form onSubmit={handleComposerSubmit} className="space-y-4">
+              <header>
+                <p className="text-xs uppercase tracking-[2px] text-slate-500">Post to {friendlyBoardName}</p>
+                <h3 className="mt-1 text-lg font-semibold text-slate-100">What’s happening here?</h3>
+              </header>
+              <textarea
+                value={composerBody}
+                onChange={event => setComposerBody(event.target.value.slice(0, MAX_POST_CHARACTERS))}
+                placeholder="Share a quick update or ask a question."
+                className="h-32 w-full resize-none rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+              />
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+                <span>{Math.max(0, remainingCharacters)} characters remaining</span>
+                <label className="flex items-center gap-2">
+                  <span className="text-slate-500">Post as</span>
+                  <input
+                    value={composerAuthor}
+                    onChange={event => setComposerAuthor(event.target.value)}
+                    placeholder={alias?.alias ?? identity?.pseudonym ?? 'Anonymous'}
+                    className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+                  />
+                </label>
+              </div>
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={handleComposerClose}
+                  className="rounded-md border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+                  disabled={composerSubmitting}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={composerSubmitting || !composerBody.trim()}
+                  className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                >
+                  {composerSubmitting ? 'Posting…' : 'Post'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {selectedPost && (
+        <PostDetail
+          post={selectedPost}
+          boardName={friendlyBoardName}
+          distanceLabel={boardDistanceLabel}
+          replies={activeReplies}
+          isSubmitting={replySubmitting}
+          onCreateReply={body => handleCreateReply(selectedPost, body)}
+          onClose={() => setSelectedPost(null)}
+        />
+      )}
     </div>
   );
 }

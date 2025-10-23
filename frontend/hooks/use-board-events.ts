@@ -15,13 +15,15 @@ interface State {
   events: BoardEvent[];
   status: 'connecting' | 'connected' | 'disconnected' | 'error';
   error?: string;
+  lastHeartbeat: number | null;
 }
 
 export function useBoardEvents(
   boardId: string,
   { initialEvents = [], endpoint = '/boards', workerBaseUrl = 'http://localhost:8788' }: UseBoardEventsOptions = {}
 ): State {
-  const [state, setState] = useState<State>({ events: initialEvents, status: 'connecting' });
+  const [state, setState] = useState<State>({ events: initialEvents, status: 'connecting', lastHeartbeat: null });
+  const lastHeartbeatRef = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -46,15 +48,18 @@ export function useBoardEvents(
           throw new Error(`Failed to load events (${res.status})`);
         }
         const body = (await res.json()) as { events?: BoardEvent[] };
-        if (!cancelled && body.events) {
-          setState(prev => ({ ...prev, events: body.events.reverse() }));
+        if (!cancelled) {
+          const hydratedEvents = body.events ?? [];
+          const now = Date.now();
+          lastHeartbeatRef.current = now;
+          setState(prev => ({ ...prev, events: hydratedEvents.slice().reverse(), lastHeartbeat: now }));
         }
       } catch (error) {
         if (!cancelled) {
           if (error instanceof DOMException && error.name === 'AbortError') {
             return;
           }
-          setState(prev => ({ ...prev, error: (error as Error).message }));
+          setState(prev => ({ ...prev, error: (error as Error).message, lastHeartbeat: lastHeartbeatRef.current }));
         }
       }
     }
@@ -86,7 +91,8 @@ export function useBoardEvents(
     const handleOpen = () => {
       reconnectAttempts.current = 0;
       if (!isMounted) return;
-      setState(prev => ({ ...prev, status: 'connected', error: undefined }));
+      const now = Date.now();
+      setState(prev => ({ ...prev, status: 'connected', error: undefined, lastHeartbeat: now }));
     };
 
     const handleMessage = (event: MessageEvent) => {
@@ -96,11 +102,17 @@ export function useBoardEvents(
           return;
         }
         if (payload.type === 'keepalive') {
+          const now = Date.now();
+          lastHeartbeatRef.current = now;
+          setState(prev => ({ ...prev, lastHeartbeat: now }));
           return;
         }
         if (payload.type === 'event') {
+          const now = Date.now();
+          lastHeartbeatRef.current = now;
           setState(prev => ({
             ...prev,
+            lastHeartbeat: now,
             events: [...prev.events, {
               id: payload.eventId ?? crypto.randomUUID(),
               event: payload.event ?? 'message',
@@ -129,21 +141,21 @@ export function useBoardEvents(
       const delay = Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5));
       reconnectTimer.current = setTimeout(() => {
         if (!isMounted || !shouldReconnect.current) return;
-        setState(prev => ({ ...prev, status: 'connecting' }));
+        setState(prev => ({ ...prev, status: 'connecting', lastHeartbeat: lastHeartbeatRef.current }));
         reconnect();
       }, delay);
     };
 
     const handleClose = () => {
       if (!isMounted) return;
-      setState(prev => ({ ...prev, status: 'disconnected' }));
+      setState(prev => ({ ...prev, status: 'disconnected', lastHeartbeat: lastHeartbeatRef.current }));
       scheduleReconnect();
     };
 
     const handleError = (event: Event) => {
       console.error('[ui] websocket error', event);
       if (!isMounted) return;
-      setState(prev => ({ ...prev, status: 'error', error: 'WebSocket error' }));
+      setState(prev => ({ ...prev, status: 'error', error: 'WebSocket error', lastHeartbeat: lastHeartbeatRef.current }));
       scheduleReconnect();
     };
 
