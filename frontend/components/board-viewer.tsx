@@ -1,10 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   BoardAlias,
-  BoardEventPayload,
   BoardFeedResponse,
   BoardPost,
   BoardSummary,
@@ -22,11 +21,45 @@ interface BoardViewerProps {
   boardId: string;
 }
 
+type SponsoredQuietCard = {
+  id: string;
+  title: string;
+  body: string;
+  cta: string;
+  href: string;
+  boards?: string[];
+  impressionCap?: number;
+};
+
+function loadSponsoredQuietCards(): SponsoredQuietCard[] {
+  const raw = process.env.NEXT_PUBLIC_SPONSORED_QUIET_CARDS;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as SponsoredQuietCard[];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter(card => typeof card?.id === 'string' && card.id.trim().length > 0)
+      .map(card => ({
+        ...card,
+        impressionCap: typeof card.impressionCap === 'number' && card.impressionCap >= 0 ? card.impressionCap : undefined,
+        boards: Array.isArray(card.boards) ? card.boards.filter(board => typeof board === 'string' && board) : undefined
+      }));
+  } catch (error) {
+    console.warn('[ui] failed to parse NEXT_PUBLIC_SPONSORED_QUIET_CARDS', error);
+    return [];
+  }
+}
+
+const SPONSORED_QUIET_CARDS = loadSponsoredQuietCards();
+const SPONSORED_DISMISSED_STORAGE_KEY = 'boardapp:sponsoredQuiet:dismissed';
+const SPONSORED_IMPRESSIONS_STORAGE_KEY = 'boardapp:sponsoredQuiet:impressions';
+
 export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
   const {
     identity: sharedIdentity,
-    aliasMap,
     setIdentity: setSharedIdentity,
     setAlias: setSharedAlias,
     getAlias,
@@ -71,7 +104,67 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     []
   );
   const quietModePrompt = useMemo(() => quietPrompts[Math.floor(Math.random() * quietPrompts.length)], [quietPrompts]);
+  const [dismissedSponsored, setDismissedSponsored] = useState<Set<string>>(() => new Set());
+  const [sponsoredImpressions, setSponsoredImpressions] = useState<Record<string, number>>(() => ({}));
+  const lastSponsoredImpressionRef = useRef<string | null>(null);
+  const [sponsoredStorageHydrated, setSponsoredStorageHydrated] = useState(false);
   const { addToast } = useToast();
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const rawDismissed = window.localStorage.getItem(SPONSORED_DISMISSED_STORAGE_KEY);
+      if (rawDismissed) {
+        const parsed = JSON.parse(rawDismissed);
+        if (Array.isArray(parsed)) {
+          setDismissedSponsored(new Set(parsed.filter((value): value is string => typeof value === 'string' && value.length > 0)));
+        }
+      }
+    } catch (error) {
+      console.warn('[ui] failed to hydrate sponsored dismissals', error);
+    }
+
+    try {
+      const rawImpressions = window.localStorage.getItem(SPONSORED_IMPRESSIONS_STORAGE_KEY);
+      if (rawImpressions) {
+        const parsed = JSON.parse(rawImpressions) as Record<string, number> | null;
+        if (parsed && typeof parsed === 'object') {
+          const normalized: Record<string, number> = {};
+          for (const [key, value] of Object.entries(parsed)) {
+            if (typeof value === 'number' && value >= 0) {
+              normalized[key] = value;
+            }
+          }
+          setSponsoredImpressions(normalized);
+        }
+      }
+    } catch (error) {
+      console.warn('[ui] failed to hydrate sponsored impressions', error);
+    }
+
+    setSponsoredStorageHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !sponsoredStorageHydrated) return;
+    try {
+      window.localStorage.setItem(
+        SPONSORED_DISMISSED_STORAGE_KEY,
+        JSON.stringify(Array.from(dismissedSponsored))
+      );
+    } catch (error) {
+      console.warn('[ui] failed to persist sponsored dismissals', error);
+    }
+  }, [dismissedSponsored, sponsoredStorageHydrated]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !sponsoredStorageHydrated) return;
+    try {
+      window.localStorage.setItem(SPONSORED_IMPRESSIONS_STORAGE_KEY, JSON.stringify(sponsoredImpressions));
+    } catch (error) {
+      console.warn('[ui] failed to persist sponsored impressions', error);
+    }
+  }, [sponsoredImpressions, sponsoredStorageHydrated]);
 
   useEffect(() => {
     setAliasStatus(null);
@@ -118,6 +211,41 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     }
   }, [status]);
 
+  const sponsoredQuietCard = useMemo(() => {
+    if (SPONSORED_QUIET_CARDS.length === 0) {
+      return null;
+    }
+    return (
+      SPONSORED_QUIET_CARDS.find(card => {
+        if (card.boards && card.boards.length > 0 && !card.boards.includes(boardId)) {
+          return false;
+        }
+        if (dismissedSponsored.has(card.id)) {
+          return false;
+        }
+        const impressions = sponsoredImpressions[card.id] ?? 0;
+        if (card.impressionCap !== undefined && card.impressionCap >= 0 && impressions >= card.impressionCap) {
+          return false;
+        }
+        return true;
+      }) ?? null
+    );
+  }, [boardId, dismissedSponsored, sponsoredImpressions]);
+
+  useEffect(() => {
+    if (!sponsoredStorageHydrated) return;
+    if (!sponsoredQuietCard) {
+      lastSponsoredImpressionRef.current = null;
+      return;
+    }
+    if (lastSponsoredImpressionRef.current === sponsoredQuietCard.id) return;
+    lastSponsoredImpressionRef.current = sponsoredQuietCard.id;
+    setSponsoredImpressions(prev => ({
+      ...prev,
+      [sponsoredQuietCard.id]: (prev[sponsoredQuietCard.id] ?? 0) + 1
+    }));
+  }, [sponsoredQuietCard, sponsoredStorageHydrated]);
+
   const sortedEvents = useMemo(() => events.slice().sort((a, b) => a.timestamp - b.timestamp), [events]);
 
   const effectiveIdentity = identityHydrated ? identity : null;
@@ -142,6 +270,19 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       throw error;
     }
   }, []);
+
+  const handleSponsoredDismiss = useCallback((cardId: string, cardTitle: string) => {
+    setDismissedSponsored(prev => {
+      const next = new Set(prev);
+      next.add(cardId);
+      return next;
+    });
+    addToast({ title: 'Card dismissed', description: `Muted ${cardTitle}.` });
+  }, [addToast]);
+
+  const handleSponsoredCtaClick = useCallback((card: SponsoredQuietCard) => {
+    addToast({ title: 'Opening sponsor', description: card.title });
+  }, [addToast]);
 
   const handleSessionError = useCallback(
     async (error: unknown, workerBaseUrl: string, setMessage?: (msg: string) => void) => {
@@ -843,6 +984,31 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             >
               Create a post →
             </button>
+          </div>
+        )}
+        {!feedLoading && !feedError && posts.length < 3 && sponsoredQuietCard && (
+          <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-6 text-sm text-slate-200">
+            <div className="flex items-center justify-between text-[11px] uppercase tracking-[2px] text-emerald-300">
+              <span>Sponsored</span>
+              <button
+                type="button"
+                onClick={() => handleSponsoredDismiss(sponsoredQuietCard.id, sponsoredQuietCard.title)}
+                className="rounded border border-emerald-500/40 px-2 py-1 text-[10px] uppercase tracking-[2px] text-emerald-200 transition hover:border-emerald-400 hover:text-emerald-100"
+              >
+                Dismiss
+              </button>
+            </div>
+            <h3 className="mt-3 text-lg font-semibold text-emerald-200">{sponsoredQuietCard.title}</h3>
+            <p className="mt-2 text-sm text-emerald-100/80">{sponsoredQuietCard.body}</p>
+            <a
+              href={sponsoredQuietCard.href}
+              target={/^https?:\/\//i.test(sponsoredQuietCard.href) ? '_blank' : undefined}
+              rel={/^https?:\/\//i.test(sponsoredQuietCard.href) ? 'noopener noreferrer' : undefined}
+              onClick={() => handleSponsoredCtaClick(sponsoredQuietCard)}
+              className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-emerald-200 underline decoration-emerald-500/60 underline-offset-4 transition hover:text-emerald-100"
+            >
+              {sponsoredQuietCard.cta || 'Learn more'} <span aria-hidden>→</span>
+            </a>
           </div>
         )}
         {!feedLoading && posts.length === 0 && !feedError && (

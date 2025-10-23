@@ -4,25 +4,26 @@ Tracking TODOs stemming from the latest product decisions. Update as work progre
 
 ## Core Feed & Location
 - [ ] Implement adaptive radius service (shrink/grow based on post freshness) with hysteresis.
-- [ ] Add quiet-mode content prompts + optional sponsored cards when feed is sparse.
-- [ ] Instrument dead-zone detector (board freshness metric feeding alerting).
+- [x] Add quiet-mode content prompts when feed is sparse (`frontend/components/board-viewer.tsx`).
+- [x] Layer optional sponsored quiet-mode cards / inventory controls (`frontend/components/board-viewer.tsx`).
+- [x] Instrument dead-zone detector (board freshness metric feeding alerting) (`workers/src/index.ts`, `workers/src/__tests__/storage.spec.ts`).
 - [ ] Phase 1 MVP variant: support fixed-radius, text-only feed configuration for targeted dorm launches.
 
 ## Ranking & Moderation
-- [ ] Update hot_rank to incorporate velocity boost and rapid-engagement decay window.
+- [x] Update hot_rank to incorporate velocity boost and rapid-engagement decay window (`workers/src/index.ts`, `workers/src/__tests__/storage.spec.ts`).
 - [ ] Build brigade detection heuristics (reaction entropy, cohort surges) and tie into moderation queue.
 - [ ] Integrate proactive content filter/quarantine before user render.
 - [ ] Implement tiered moderator roles (volunteer/staff/admin) with permissions & audit logs.
 - [ ] Build consensus workflow UI (moderator voting dashboard + escalations).
 
 ## Identity & Access UX
-- [ ] Add toast feedback on board page for Access re-link, alias accepts, etc. (done)
-- [ ] Provide alias hints for new users (done)
-- [ ] Expose quick access cards on landing page (done)
+- [x] Add toast feedback on board page for Access re-link, alias accepts, etc. (`frontend/components/board-viewer.tsx`, `frontend/components/identity-panel.tsx`).
+- [x] Provide alias hints for new users (`frontend/components/identity-panel.tsx`).
+- [x] Expose quick access cards on landing page (`frontend/components/board-preview.tsx`, `frontend/components/quick-actions.tsx`).
 
 ## Platform & Observability
-- [ ] Route `access.identity_*` logs to analytics warehouse + dashboard panels.
-- [ ] Configure dead-zone alert in monitoring stack.
+- [x] Route `access.identity_*` logs to analytics warehouse + dashboard panels (`workers/src/index.ts`, `workers/src/__tests__/storage.spec.ts`).
+- [x] Configure dead-zone alert in monitoring stack (`workers/src/index.ts`, `workers/src/__tests__/storage.spec.ts`, `workers/wrangler.toml`).
 - [ ] Log moderator actions + identity lookups for audits.
 
 ## Battery & Performance

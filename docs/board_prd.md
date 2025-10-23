@@ -239,6 +239,8 @@ where author_bonus = 1.1 for Top‑10, else 1.0 (cap at +10%)
 **drafts** — id; user_id; board_id; content_text; created_at; expires_at (24h).
 
 **board_live_mode_log** — id; board_id; state (enabled/disabled); trigger (auto_threshold/admin_force_on/admin_force_off/idle_timeout); active_users; posts_per_min; changed_at.
+**dead_zone_alerts** — id; board_id; streak; post_count; threshold; window_start; window_end; window_ms; triggered_at; alert_level; trace_id; created_at.
+**access_identity_events** — id; event_type; subject; user_id; email; trace_id; metadata; created_at.
 
 ---
 

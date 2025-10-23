@@ -44,6 +44,10 @@ const PSEUDONYM_MAX = 20;
 const ALIAS_MIN = 3;
 const ALIAS_MAX = 24;
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const TIME_DECAY_HALF_LIFE_MS = 24 * 60 * 60 * 1000;
+const VELOCITY_DECAY_MS = 90 * 60 * 1000;
+const VELOCITY_RATE_SATURATION = 5; // reactions per minute for full velocity credit
+const WILSON_Z = 1.96; // 95% confidence interval
 
 const textEncoder = new TextEncoder();
 
@@ -61,6 +65,22 @@ interface AccessJwtConfig {
   jwksUrl?: string;
 }
 
+interface DeadZoneSnapshot {
+  boardId: string;
+  status: 'healthy' | 'dead_zone';
+  postCount: number;
+  windowStart: number;
+  windowEnd: number;
+  threshold: number;
+  deadZoneStreak: number;
+  alertTriggered: boolean;
+  lastPostAt: number | null;
+}
+
+const DEAD_ZONE_WINDOW_MS = 2 * 60 * 60 * 1000;
+const DEAD_ZONE_MIN_POSTS = 3;
+const DEAD_ZONE_STREAK_THRESHOLD = 3;
+
 interface AccessPrincipal {
   subject?: string;
   email?: string;
@@ -70,6 +90,17 @@ interface UserAccessLink {
   access_subject: string;
   user_id: string;
   email: string | null;
+}
+
+interface AccessIdentityEvent {
+  id: string;
+  eventType: string;
+  subject: string;
+  userId: string | null;
+  email: string | null;
+  traceId: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: number;
 }
 
 class ApiError extends Error {
@@ -159,6 +190,57 @@ function base64UrlToUint8Array(segment: string): Uint8Array {
     array[i] = binary.charCodeAt(i);
   }
   return array;
+}
+
+function calculateWilsonScore(likeCount: number, dislikeCount: number): number {
+  const total = likeCount + dislikeCount;
+  if (total === 0) {
+    return 0;
+  }
+  const z = WILSON_Z;
+  const phat = likeCount / total;
+  const denominator = 1 + (z ** 2) / total;
+  const centreAdjustment = phat + (z ** 2) / (2 * total);
+  const adjustedStd = z * Math.sqrt((phat * (1 - phat) + (z ** 2) / (4 * total)) / total);
+  const score = (centreAdjustment - adjustedStd) / denominator;
+  return Number.isFinite(score) ? Math.max(0, score) : 0;
+}
+
+function calculateTimeDecay(createdAt: number, now: number): number {
+  const ageMs = Math.max(0, now - createdAt);
+  if (ageMs === 0) {
+    return 1;
+  }
+  const decay = Math.exp((-Math.log(2) * ageMs) / TIME_DECAY_HALF_LIFE_MS);
+  return Number.isFinite(decay) ? decay : 0;
+}
+
+function calculateVelocityBoost(reactionCount: number, createdAt: number, now: number): number {
+  if (reactionCount <= 0) {
+    return 0;
+  }
+  const ageMs = Math.max(1000, now - createdAt);
+  const ageMinutes = ageMs / 60_000;
+  const reactionsPerMinute = reactionCount / Math.max(ageMinutes, 1 / 60);
+  const normalizedRate = Math.min(reactionsPerMinute / VELOCITY_RATE_SATURATION, 1);
+  const freshness = Math.exp(-ageMs / VELOCITY_DECAY_MS);
+  const boost = normalizedRate * freshness;
+  return Number.isFinite(boost) ? boost : 0;
+}
+
+function calculateHotRank(
+  likeCount: number,
+  dislikeCount: number,
+  reactionCount: number,
+  createdAt: number,
+  now: number
+): number {
+  const wilson = calculateWilsonScore(likeCount, dislikeCount);
+  const timeDecay = calculateTimeDecay(createdAt, now);
+  const velocityBonus = calculateVelocityBoost(reactionCount, createdAt, now);
+  const authorBonus = 1; // placeholder until leaderboard integration
+  const base = 0.5 * timeDecay + 0.45 * wilson + 0.05 * authorBonus;
+  return base + velocityBonus * 0.15;
 }
 
 async function fetchJwks(config: AccessJwtConfig): Promise<JsonWebKey[]> {
@@ -416,6 +498,8 @@ async function createPost(
     .bind(id, boardId, userId ?? null, author ?? null, body, createdAt)
     .run();
 
+  const hotRank = calculateHotRank(0, 0, 0, createdAt, createdAt);
+
   return {
     id,
     boardId,
@@ -427,12 +511,19 @@ async function createPost(
     createdAt,
     reactionCount: 0,
     likeCount: 0,
-    dislikeCount: 0
+    dislikeCount: 0,
+    hotRank
   };
 }
 
-async function listPosts(env: Env, boardId: string, limit: number): Promise<SharedBoardPost[]> {
+async function listPosts(
+  env: Env,
+  boardId: string,
+  limit: number,
+  options: { now?: number } = {}
+): Promise<SharedBoardPost[]> {
   await ensureSchema(env);
+  const now = options.now ?? Date.now();
   const { results } = await env.BOARD_DB.prepare(
     `SELECT
         p.id,
@@ -459,19 +550,37 @@ async function listPosts(env: Env, boardId: string, limit: number): Promise<Shar
     .bind(boardId, limit)
     .all<PostListRow>();
 
-  return (results ?? []).map(row => ({
-    id: row.id,
-    boardId: row.board_id,
-    userId: row.user_id ?? null,
-    author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
-    alias: row.board_alias ?? row.author ?? null,
-    pseudonym: row.pseudonym ?? null,
-    body: row.body,
-    createdAt: row.created_at,
-    reactionCount: row.reaction_count,
-    likeCount: row.like_count,
-    dislikeCount: row.dislike_count
-  }));
+  return (results ?? [])
+    .map(row => {
+      const hotRank = calculateHotRank(
+        row.like_count,
+        row.dislike_count,
+        row.reaction_count,
+        row.created_at,
+        now
+      );
+      return {
+        id: row.id,
+        boardId: row.board_id,
+        userId: row.user_id ?? null,
+        author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
+        alias: row.board_alias ?? row.author ?? null,
+        pseudonym: row.pseudonym ?? null,
+        body: row.body,
+        createdAt: row.created_at,
+        reactionCount: row.reaction_count,
+        likeCount: row.like_count,
+        dislikeCount: row.dislike_count,
+        hotRank
+      } as SharedBoardPost;
+    })
+    .sort((a, b) => {
+      const rankDelta = (b.hotRank ?? 0) - (a.hotRank ?? 0);
+      if (Math.abs(rankDelta) > 1e-6) {
+        return rankDelta;
+      }
+      return b.createdAt - a.createdAt;
+    });
 }
 
 async function issueSessionTicket(env: Env, userId: string): Promise<SessionTicket> {
@@ -685,15 +794,11 @@ async function resolveAccessUser(env: Env, principal: AccessPrincipal): Promise<
     if (user) {
       if (user.status === 'access_orphan') {
         await markUserStatus(env, user.id, 'active');
-        console.log(
-          JSON.stringify({
-            event: 'access.identity_reactivated',
-            user_id: user.id,
-            subject,
-            email: principal.email ?? existingLink.email ?? null,
-            timestamp: Date.now()
-          })
-        );
+        await emitAccessIdentityEvent(env, 'access.identity_reactivated', {
+          subject,
+          user_id: user.id,
+          email: principal.email ?? existingLink.email ?? null
+        });
       }
       if (principal.email && principal.email !== existingLink.email) {
         await upsertAccessLink(env, subject, existingLink.user_id, principal.email);
@@ -711,16 +816,12 @@ async function resolveAccessUser(env: Env, principal: AccessPrincipal): Promise<
     throw new ApiError(500, { error: 'failed to provision access user' });
   }
   await markUserStatus(env, user.id, 'access_auto');
-  console.log(
-    JSON.stringify({
-      event: 'access.identity_auto_provisioned',
-      user_id: user.id,
-      subject,
-      email: principal.email ?? null,
-      pseudonym: user.pseudonym,
-      timestamp: Date.now()
-    })
-  );
+  await emitAccessIdentityEvent(env, 'access.identity_auto_provisioned', {
+    subject,
+    user_id: user.id,
+    email: principal.email ?? null,
+    metadata: { pseudonym: user.pseudonym }
+  });
   return user;
 }
 
@@ -751,15 +852,11 @@ async function ensureAccessPrincipalForUser(
       throw error;
     }
     await markUserStatus(env, userId, 'active');
-    console.log(
-      JSON.stringify({
-        event: 'access.identity_linked',
-        subject,
-        user_id: userId,
-        email: principal.email ?? existingLink?.email ?? null,
-        timestamp: Date.now()
-      })
-    );
+    await emitAccessIdentityEvent(env, 'access.identity_linked', {
+      subject,
+      user_id: userId,
+      email: principal.email ?? existingLink?.email ?? null
+    });
     return;
   }
 
@@ -774,14 +871,10 @@ async function ensureAccessPrincipalForUser(
     const previousUser = await getUserById(env, existingLink.user_id);
     if (previousUser) {
       await markUserStatus(env, previousUser.id, 'access_orphan');
-      console.log(
-        JSON.stringify({
-          event: 'access.identity_orphaned',
-          subject,
-          user_id: previousUser.id,
-          timestamp: Date.now()
-        })
-      );
+      await emitAccessIdentityEvent(env, 'access.identity_orphaned', {
+        subject,
+        user_id: previousUser.id
+      });
     }
     try {
       await upsertAccessLink(env, subject, userId, principal.email ?? existingLink.email ?? null);
@@ -792,15 +885,11 @@ async function ensureAccessPrincipalForUser(
       throw error;
     }
     await markUserStatus(env, userId, 'active');
-    console.log(
-      JSON.stringify({
-        event: 'access.identity_relinked',
-        subject,
-        user_id: userId,
-        email: principal.email ?? existingLink.email ?? null,
-        timestamp: Date.now()
-      })
-    );
+    await emitAccessIdentityEvent(env, 'access.identity_relinked', {
+      subject,
+      user_id: userId,
+      email: principal.email ?? existingLink.email ?? null
+    });
     return;
   }
 
@@ -939,6 +1028,269 @@ async function applyReaction(
   return { total, likeCount, dislikeCount };
 }
 
+async function recordAccessIdentityEvent(
+  env: Env,
+  event: {
+    eventType: string;
+    subject: string;
+    userId?: string | null;
+    email?: string | null;
+    traceId?: string | null;
+    metadata?: Record<string, unknown> | null;
+    createdAt?: number;
+  }
+) {
+  await ensureSchema(env);
+  const id = crypto.randomUUID();
+  const createdAt = event.createdAt ?? Date.now();
+  await env.BOARD_DB.prepare(
+    `INSERT INTO access_identity_events (id, event_type, subject, user_id, email, trace_id, metadata, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
+  )
+    .bind(
+      id,
+      event.eventType,
+      event.subject,
+      event.userId ?? null,
+      event.email ?? null,
+      event.traceId ?? null,
+      event.metadata ? JSON.stringify(event.metadata) : null,
+      createdAt
+    )
+    .run();
+}
+
+async function emitAccessIdentityEvent(
+  env: Env,
+  eventType: string,
+  payload: {
+    subject: string;
+    user_id?: string | null;
+    email?: string | null;
+    trace_id?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }
+) {
+  const timestamp = Date.now();
+  const { subject, user_id, email, trace_id, metadata } = payload;
+  const rest: Record<string, unknown> = {
+    ...(metadata ?? {})
+  };
+  console.log(
+    JSON.stringify({
+      event: eventType,
+      subject,
+      user_id: user_id ?? null,
+      email: email ?? null,
+      trace_id: trace_id ?? null,
+      ...rest,
+      timestamp
+    })
+  );
+  await recordAccessIdentityEvent(env, {
+    eventType,
+    subject,
+    userId: user_id ?? null,
+    email: email ?? null,
+    traceId: trace_id ?? null,
+    metadata: Object.keys(rest).length > 0 ? rest : null,
+    createdAt: timestamp
+  });
+}
+
+async function getLatestFreshnessSnapshot(env: Env, boardId: string) {
+  const record = await env.BOARD_DB.prepare(
+    `SELECT payload FROM board_events
+       WHERE board_id = ?1 AND event_type = ?2
+       ORDER BY created_at DESC
+       LIMIT 1`
+  )
+    .bind(boardId, 'board.freshness')
+    .first<{ payload?: string | null }>();
+
+  if (!record?.payload) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(record.payload) as Partial<DeadZoneSnapshot> & { status?: string };
+  } catch (error) {
+    console.warn('[metrics] failed to parse previous freshness payload', error);
+    return null;
+  }
+}
+
+async function recordDeadZoneAlert(
+  env: Env,
+  snapshot: DeadZoneSnapshot,
+  options: { windowMs: number; timestamp: number; traceId: string }
+) {
+  await ensureSchema(env);
+  const id = crypto.randomUUID();
+  const { windowMs, timestamp, traceId } = options;
+  await env.BOARD_DB.prepare(
+    `INSERT INTO dead_zone_alerts (
+        id, board_id, streak, post_count, threshold, window_start, window_end, window_ms, triggered_at, alert_level, trace_id, created_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+  )
+    .bind(
+      id,
+      snapshot.boardId,
+      snapshot.deadZoneStreak,
+      snapshot.postCount,
+      snapshot.threshold,
+      snapshot.windowStart,
+      snapshot.windowEnd,
+      windowMs,
+      timestamp,
+      snapshot.status,
+      traceId,
+      timestamp
+    )
+    .run();
+}
+
+async function detectDeadZones(
+  env: Env,
+  options: {
+    now?: number;
+    windowMs?: number;
+    minPosts?: number;
+    streakThreshold?: number;
+  } = {}
+) {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const windowMs = options.windowMs ?? DEAD_ZONE_WINDOW_MS;
+  const minPosts = options.minPosts ?? DEAD_ZONE_MIN_POSTS;
+  const streakThreshold = options.streakThreshold ?? DEAD_ZONE_STREAK_THRESHOLD;
+  const windowStart = now - windowMs;
+
+  const boardRows = await env.BOARD_DB.prepare('SELECT id FROM boards ORDER BY id ASC').all<{ id: string }>();
+  const boards = boardRows?.results ?? [];
+
+  const snapshots: DeadZoneSnapshot[] = [];
+  const alerts: DeadZoneSnapshot[] = [];
+
+  for (const board of boards) {
+    const boardId = board.id;
+    const countRow = await env.BOARD_DB.prepare(
+      `SELECT COUNT(*) AS post_count
+         FROM posts
+        WHERE board_id = ?1
+          AND created_at >= ?2`
+    )
+      .bind(boardId, windowStart)
+      .first<{ post_count: number | null }>();
+
+    const postCount = countRow?.post_count ?? 0;
+    const status: DeadZoneSnapshot['status'] = postCount >= minPosts ? 'healthy' : 'dead_zone';
+
+    const lastPostRow = await env.BOARD_DB.prepare(
+      `SELECT MAX(created_at) AS last_post_at
+         FROM posts
+        WHERE board_id = ?1`
+    )
+      .bind(boardId)
+      .first<{ last_post_at: number | null }>();
+
+    const previous = await getLatestFreshnessSnapshot(env, boardId);
+    const previousStreak = typeof previous?.deadZoneStreak === 'number' ? previous.deadZoneStreak : 0;
+    const previousStatus = previous?.status;
+    let deadZoneStreak = 0;
+
+    if (status === 'dead_zone') {
+      deadZoneStreak = previousStatus === 'dead_zone' ? previousStreak + 1 : 1;
+    }
+
+    const alertTriggered = status === 'dead_zone' && deadZoneStreak >= streakThreshold;
+    const traceId = crypto.randomUUID();
+
+    const snapshot: DeadZoneSnapshot = {
+      boardId,
+      status,
+      postCount,
+      windowStart,
+      windowEnd: now,
+      threshold: minPosts,
+      deadZoneStreak,
+      alertTriggered,
+      lastPostAt: lastPostRow?.last_post_at ?? null
+    };
+
+    const eventRecord: BoardEventPayload = {
+      id: crypto.randomUUID(),
+      event: 'board.freshness',
+      data: snapshot,
+      traceId,
+      timestamp: now
+    };
+
+    await persistEvent(env, eventRecord, boardId);
+
+    console.log(
+      JSON.stringify({
+        event: 'board.freshness_sample',
+        board_id: boardId,
+        status,
+        post_count: postCount,
+        window_start: windowStart,
+        window_end: now,
+        dead_zone_streak: deadZoneStreak,
+        alert_triggered: alertTriggered,
+        last_post_at: snapshot.lastPostAt,
+        trace_id: traceId
+      })
+    );
+
+    if (alertTriggered) {
+      alerts.push(snapshot);
+      await recordDeadZoneAlert(env, snapshot, { windowMs, timestamp: now, traceId });
+      const alertEvent: BoardEventPayload = {
+        id: crypto.randomUUID(),
+        event: 'board.dead_zone_triggered',
+        data: {
+          boardId,
+          streak: deadZoneStreak,
+          postCount,
+          threshold: minPosts,
+          windowStart,
+          windowEnd: now,
+          windowMs,
+          traceId
+        },
+        traceId,
+        timestamp: now
+      };
+      await persistEvent(env, alertEvent, boardId);
+      console.log(
+        JSON.stringify({
+          event: 'board.dead_zone_triggered',
+          board_id: boardId,
+          streak: deadZoneStreak,
+          post_count: postCount,
+          threshold: minPosts,
+          window_ms: windowMs,
+          timestamp: now,
+          trace_id: traceId
+        })
+      );
+    }
+
+    snapshots.push(snapshot);
+  }
+
+  return {
+    ok: true,
+    windowStart,
+    windowEnd: now,
+    threshold: minPosts,
+    streakThreshold,
+    results: snapshots,
+    alerts
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -989,6 +1341,23 @@ export default {
         return withCors(request, await handleFeed(request, env, url));
       }
 
+      if (url.pathname === '/metrics/dead-zones') {
+        if (request.method !== 'GET') {
+          return withCors(request, new Response(JSON.stringify({ error: 'method not allowed' }), {
+            status: 405,
+            headers: { 'Content-Type': 'application/json' }
+          }));
+        }
+        const report = await detectDeadZones(env);
+        return withCors(
+          request,
+          new Response(JSON.stringify(report), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        );
+      }
+
       return withCors(request, new Response('Not Found', { status: 404 }));
     } catch (error: any) {
       if (error instanceof ApiError) {
@@ -1009,6 +1378,29 @@ export default {
         })
       );
     }
+  },
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const runTraceId = crypto.randomUUID();
+    const scheduledTime = typeof event.scheduledTime === 'number' ? event.scheduledTime : Date.now();
+    try {
+      const report = await detectDeadZones(env, { now: scheduledTime });
+      console.log(
+        JSON.stringify({
+          event: 'board.dead_zone_scheduled_run',
+          trace_id: runTraceId,
+          window_start: report.windowStart,
+          window_end: report.windowEnd,
+          boards_scanned: report.results.length,
+          alerts_emitted: report.alerts.length,
+          cron: typeof event.cron === 'string' ? event.cron : null
+        })
+      );
+    } catch (error) {
+      console.error('[worker] dead zone scheduled failure', error);
+      if (typeof event.noRetry === 'function') {
+        event.noRetry();
+      }
+    }
   }
 };
 
@@ -1028,6 +1420,7 @@ export {
   upsertBoardAlias,
   applyReaction,
   getBoardAlias,
+  detectDeadZones,
   __internal
 };
 

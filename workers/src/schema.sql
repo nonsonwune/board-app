@@ -25,6 +25,32 @@ CREATE TABLE IF NOT EXISTS board_events (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS board_events_board_created_at_idx ON board_events (board_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS dead_zone_alerts (
+  id TEXT PRIMARY KEY,
+  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+  streak INTEGER NOT NULL,
+  post_count INTEGER NOT NULL,
+  threshold INTEGER NOT NULL,
+  window_start INTEGER NOT NULL,
+  window_end INTEGER NOT NULL,
+  window_ms INTEGER NOT NULL,
+  triggered_at INTEGER NOT NULL,
+  alert_level TEXT NOT NULL DEFAULT 'dead_zone',
+  trace_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dead_zone_alerts_board_triggered_at_idx ON dead_zone_alerts (board_id, triggered_at DESC);
+CREATE TABLE IF NOT EXISTS access_identity_events (
+  id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  user_id TEXT,
+  email TEXT,
+  trace_id TEXT,
+  metadata TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS access_identity_events_event_created_idx ON access_identity_events (event_type, created_at DESC);
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

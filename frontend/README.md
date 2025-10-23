@@ -15,3 +15,21 @@
 - `pnpm --filter @board-app/frontend test` (placeholder until component tests land)
 
 Refer to `workers/README.md` for endpoint and migration details.
+
+## Quiet Mode Sponsored Cards
+- Define `NEXT_PUBLIC_SPONSORED_QUIET_CARDS` as a JSON array to surface optional sponsored prompts when a board is quiet.
+  - Example:
+    ```json
+    [
+      {
+        "id": "fall-welcome",
+        "title": "Campus Coffee Happy Hour",
+        "body": "Show your student ID after 6pm and get a free refill tonight only.",
+        "cta": "Visit Daily Grind",
+        "href": "https://dailygrind.example",
+        "boards": ["campus-north"],
+        "impressionCap": 3
+      }
+    ]
+    ```
+- Cards may be capped per board/user and dismissed locally via the UI; dismissed state and impression counts persist in `localStorage`.

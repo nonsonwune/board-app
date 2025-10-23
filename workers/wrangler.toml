@@ -13,6 +13,9 @@ fallthrough = false
 [dev]
 port = 8788
 
+[triggers]
+crons = ["*/15 * * * *"]
+
 [durable_objects]
 bindings = [
   { name = "BOARD_ROOM_DO", class_name = "BoardRoomDO" }

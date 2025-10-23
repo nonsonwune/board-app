@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   __resetSchemaForTests,
   ensureSchema,
@@ -9,6 +9,7 @@ import {
   upsertBoardAlias,
   applyReaction,
   getBoardAlias,
+  detectDeadZones,
   __internal
 } from '../index';
 import type { Env } from '../index';
@@ -29,6 +30,14 @@ class MockPrepared {
 
   async run() {
     return new BoundPrepared(this.db, this.sql, []).run();
+  }
+
+  async all<T>() {
+    return new BoundPrepared(this.db, this.sql, []).all<T>();
+  }
+
+  async first<T>() {
+    return new BoundPrepared(this.db, this.sql, []).first<T>();
   }
 }
 
@@ -61,7 +70,45 @@ class BoundPrepared {
       });
     }
     if (this.sql.startsWith('INSERT INTO board_events')) {
-      this.db.events.push({ params: this.params });
+      const [id, boardId, eventType, payload, traceId, createdAt] = this.params;
+      this.db.events.push({
+        id,
+        board_id: boardId,
+        event_type: eventType,
+        payload,
+        trace_id: traceId,
+        created_at: createdAt
+      });
+    }
+    if (this.sql.startsWith('INSERT INTO dead_zone_alerts')) {
+      const [id, boardId, streak, postCount, threshold, windowStart, windowEnd, windowMs, triggeredAt, alertLevel, traceId, createdAt] = this.params;
+      this.db.deadZoneAlerts.push({
+        id,
+        board_id: boardId,
+        streak,
+        post_count: postCount,
+        threshold,
+        window_start: windowStart,
+        window_end: windowEnd,
+        window_ms: windowMs,
+        triggered_at: triggeredAt,
+        alert_level: alertLevel,
+        trace_id: traceId,
+        created_at: createdAt
+      });
+    }
+    if (this.sql.startsWith('INSERT INTO access_identity_events')) {
+      const [id, eventType, subject, userId, email, traceId, metadata, createdAt] = this.params;
+      this.db.accessIdentityEvents.push({
+        id,
+        event_type: eventType,
+        subject,
+        user_id: userId,
+        email,
+        trace_id: traceId,
+        metadata,
+        created_at: createdAt
+      });
     }
     if (this.sql.startsWith('INSERT INTO users')) {
       const [id, pseudonym, normalized, createdAt, status] = this.params;
@@ -174,6 +221,10 @@ class BoundPrepared {
 
   async all<T>() {
     this.db.prepareCalls.push({ sql: this.sql, params: this.params });
+    if (this.sql.startsWith('SELECT id FROM boards')) {
+      const results = Array.from(this.db.boards.values()).map(board => ({ id: board.id }));
+      return { results: results as T[] };
+    }
     if (this.sql.startsWith('SELECT id, display_name')) {
       const board = this.db.boards.get(this.params[0]);
       return { results: board ? [board as T] : [] };
@@ -201,6 +252,29 @@ class BoundPrepared {
 
   async first<T>() {
     this.db.prepareCalls.push({ sql: this.sql, params: this.params });
+    if (this.sql.startsWith('SELECT COUNT(*) AS post_count')) {
+      const [boardId, windowStart] = this.params;
+      const postCount = this.db.posts.filter(
+        post => post.board_id === boardId && post.created_at >= windowStart
+      ).length;
+      return { post_count: postCount } as T;
+    }
+    if (this.sql.startsWith('SELECT MAX(created_at) AS last_post_at')) {
+      const [boardId] = this.params;
+      const last = this.db.posts
+        .filter(post => post.board_id === boardId)
+        .map(post => post.created_at)
+        .sort((a, b) => b - a)[0];
+      return { last_post_at: last ?? null } as T;
+    }
+    if (this.sql.startsWith('SELECT payload FROM board_events')) {
+      const [boardId, eventType] = this.params;
+      const events = this.db.events
+        .filter(event => event.board_id === boardId && event.event_type === eventType)
+        .sort((a, b) => b.created_at - a.created_at);
+      const latest = events[0];
+      return latest ? ({ payload: latest.payload } as T) : undefined;
+    }
     if (this.sql.startsWith('SELECT id, display_name')) {
       const board = this.db.boards.get(this.params[0]);
       return board ? (board as T) : undefined;
@@ -256,6 +330,8 @@ class MockD1 {
   aliasLookup = new Map<string, string>();
   reactions = new Map<string, any>();
   accessLinks = new Map<string, { access_subject: string; user_id: string; email: string | null }>();
+  deadZoneAlerts: any[] = [];
+  accessIdentityEvents: any[] = [];
 
   async exec(sql: string) {
     this.execCalls.push({ sql });
@@ -284,8 +360,9 @@ describe('storage helpers', () => {
     const schemaCalls = env.BOARD_DB.prepareCalls.filter(call =>
       call.sql.startsWith('CREATE TABLE') || call.sql.startsWith('CREATE INDEX')
     );
-    expect(schemaCalls).toHaveLength(11);
+    expect(schemaCalls.length).toBeGreaterThanOrEqual(13);
     expect(schemaCalls[0].sql).toContain('CREATE TABLE IF NOT EXISTS boards');
+    expect(schemaCalls.some(call => call.sql.includes('dead_zone_alerts'))).toBe(true);
   });
 
   it('creates board on first request', async () => {
@@ -296,7 +373,7 @@ describe('storage helpers', () => {
     const schemaCalls = env.BOARD_DB.prepareCalls.filter(call =>
       call.sql.startsWith('CREATE TABLE') || call.sql.startsWith('CREATE INDEX')
     );
-    expect(schemaCalls).toHaveLength(11); // schema called once
+    expect(schemaCalls.length).toBeGreaterThanOrEqual(13); // schema called once, includes dead-zone artifacts
   });
 
   it('creates and lists posts', async () => {
@@ -315,6 +392,7 @@ describe('storage helpers', () => {
     expect(posts[0].userId).toBe(user.id);
     expect(posts[0].likeCount).toBe(0);
     expect(posts[0].dislikeCount).toBe(0);
+    expect(posts[0].hotRank).toBeGreaterThan(0);
   });
 
   it('registers users and rejects duplicate pseudonyms', async () => {
@@ -375,5 +453,141 @@ describe('storage helpers', () => {
     expect(updatedLink?.user_id).toBe(legacyUser.id);
     expect(env.BOARD_DB.users.get(legacyUser.id)?.status).toBe('active');
     expect(env.BOARD_DB.users.get(autoUser.id)?.status).toBe('access_orphan');
+
+    const accessEvents = env.BOARD_DB.accessIdentityEvents;
+    expect(accessEvents).toHaveLength(3);
+    expect(accessEvents.map(event => event.event_type)).toEqual([
+      'access.identity_auto_provisioned',
+      'access.identity_orphaned',
+      'access.identity_relinked'
+    ]);
+    const autoProvisioned = accessEvents.find(event => event.event_type === 'access.identity_auto_provisioned');
+    expect(autoProvisioned?.subject).toBe(principal.subject);
+    expect(autoProvisioned?.user_id).toBe(autoUser.id);
+    const metadata = autoProvisioned?.metadata ? JSON.parse(autoProvisioned.metadata as string) : {};
+    expect(metadata.pseudonym).toBe('Jane');
+  });
+
+  it('detects board dead zones and tracks streaks', async () => {
+    vi.useFakeTimers();
+    try {
+      const detectionTime = new Date('2024-01-01T12:00:00Z');
+      const staleTime = new Date(detectionTime.getTime() - 6 * 60 * 60 * 1000);
+      const recentTime = new Date(detectionTime.getTime() - 30 * 60 * 1000);
+
+      vi.setSystemTime(detectionTime);
+      const healthyBoard = await getOrCreateBoard(env, 'active-board');
+      const quietBoard = await getOrCreateBoard(env, 'quiet-board');
+
+      vi.setSystemTime(staleTime);
+      await createPost(env, quietBoard.id, 'Old news', 'system', null);
+
+      vi.setSystemTime(recentTime);
+      await createPost(env, healthyBoard.id, 'Update 1', 'system', null);
+      vi.advanceTimersByTime(1000);
+      await createPost(env, healthyBoard.id, 'Update 2', 'system', null);
+      vi.advanceTimersByTime(1000);
+      await createPost(env, healthyBoard.id, 'Update 3', 'system', null);
+
+      const report1 = await detectDeadZones(env, {
+        now: detectionTime.getTime(),
+        windowMs: 2 * 60 * 60 * 1000,
+        streakThreshold: 2
+      });
+
+      expect(report1.results).toHaveLength(2);
+      const quietSnapshot1 = report1.results.find(snapshot => snapshot.boardId === quietBoard.id);
+      expect(quietSnapshot1?.status).toBe('dead_zone');
+      expect(quietSnapshot1?.deadZoneStreak).toBe(1);
+      expect(quietSnapshot1?.alertTriggered).toBe(false);
+      expect(report1.alerts).toHaveLength(0);
+
+      const laterTime = new Date(detectionTime.getTime() + 30 * 60 * 1000);
+      const report2 = await detectDeadZones(env, {
+        now: laterTime.getTime(),
+        windowMs: 2 * 60 * 60 * 1000,
+        streakThreshold: 2
+      });
+
+      const quietSnapshot2 = report2.results.find(snapshot => snapshot.boardId === quietBoard.id);
+      expect(quietSnapshot2?.status).toBe('dead_zone');
+      expect(quietSnapshot2?.deadZoneStreak).toBe(2);
+      expect(quietSnapshot2?.alertTriggered).toBe(true);
+      expect(report2.alerts).toHaveLength(1);
+      expect(report2.alerts[0].boardId).toBe(quietBoard.id);
+
+      const healthySnapshot = report2.results.find(snapshot => snapshot.boardId === healthyBoard.id);
+      expect(healthySnapshot?.status).toBe('healthy');
+      expect(healthySnapshot?.deadZoneStreak).toBe(0);
+
+      const freshnessEvents = env.BOARD_DB.events.filter(event => event.event_type === 'board.freshness');
+      expect(freshnessEvents).toHaveLength(4);
+      const alertEvents = env.BOARD_DB.events.filter(event => event.event_type === 'board.dead_zone_triggered');
+      expect(alertEvents).toHaveLength(1);
+      expect(alertEvents[0].board_id).toBe(quietBoard.id);
+
+      expect(env.BOARD_DB.deadZoneAlerts).toHaveLength(1);
+      expect(env.BOARD_DB.deadZoneAlerts[0].board_id).toBe(quietBoard.id);
+      expect(env.BOARD_DB.deadZoneAlerts[0].streak).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('runs the dead-zone detector during scheduled events', async () => {
+    const module = await import('../index');
+    const worker = module.default;
+    const scheduledEvent = {
+      scheduledTime: Date.now(),
+      cron: '*/15 * * * *',
+      noRetry() {
+        /* noop */
+      }
+    } as ScheduledController;
+    const ctx = {
+      waitUntil: (_promise: Promise<unknown>) => {}
+    } as ExecutionContext;
+
+    await worker.scheduled!(scheduledEvent, env, ctx);
+
+    const selectBoardsCall = env.BOARD_DB.prepareCalls.find(call => call.sql.includes('SELECT id FROM boards'));
+    expect(selectBoardsCall).toBeDefined();
+  });
+
+  it('ranks posts with velocity-aware hot scores', async () => {
+    vi.useFakeTimers();
+    try {
+      const baseTime = new Date('2024-02-01T08:00:00Z').getTime();
+      vi.setSystemTime(baseTime);
+      const board = await getOrCreateBoard(env, 'ranking-board');
+      const author = await createUser(env, 'Poster', 'poster');
+      const reactorOne = await createUser(env, 'ReactorOne', 'reactorone');
+      const reactorTwo = await createUser(env, 'ReactorTwo', 'reactortwo');
+      const reactorThree = await createUser(env, 'ReactorThree', 'reactorthree');
+
+      const earlyPost = await createPost(env, board.id, 'Earlier insights', null, author.id, null, author.pseudonym);
+
+      vi.setSystemTime(baseTime + 10 * 60 * 1000);
+      await applyReaction(env, board.id, earlyPost.id, reactorOne.id, 'like');
+      await applyReaction(env, board.id, earlyPost.id, reactorTwo.id, 'like');
+      await applyReaction(env, board.id, earlyPost.id, reactorThree.id, 'like');
+
+      vi.setSystemTime(baseTime + 3 * 60 * 60 * 1000);
+      const freshPost = await createPost(env, board.id, 'Breaking update', null, author.id, null, author.pseudonym);
+
+      vi.setSystemTime(baseTime + 3 * 60 * 60 * 1000 + 30 * 1000);
+      await applyReaction(env, board.id, freshPost.id, reactorOne.id, 'like');
+      await applyReaction(env, board.id, freshPost.id, reactorTwo.id, 'like');
+
+      const evaluationTime = baseTime + 3 * 60 * 60 * 1000 + 5 * 60 * 1000;
+      const posts = await listPosts(env, board.id, 10, { now: evaluationTime });
+
+      expect(posts).toHaveLength(2);
+      expect(posts[0].id).toBe(freshPost.id);
+      expect((posts[0].hotRank ?? 0) > (posts[1].hotRank ?? 0)).toBe(true);
+      expect(posts[1].id).toBe(earlyPost.id);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

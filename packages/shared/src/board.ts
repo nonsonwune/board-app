@@ -17,6 +17,7 @@ export interface BoardPost {
   reactionCount: number;
   likeCount: number;
   dislikeCount: number;
+  hotRank?: number;
 }
 
 export interface SessionTicket {
