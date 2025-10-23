@@ -37,7 +37,14 @@ function PostCardComponent({
 }: PostCardProps) {
   const createdLabel = formatRelativeTime(post.createdAt);
   const displayName = post.alias?.trim() || post.pseudonym?.trim() || "Anonymous";
-  const boardLabel = boardName ? `${boardName}${distanceLabel ? ` · ${distanceLabel}` : ""}` : undefined;
+  const boardLabel = boardName
+    ? distanceLabel
+      ? `${boardName}${distanceLabel ? ` · ${distanceLabel}` : ""}`
+      : `From: ${boardName}`
+    : undefined;
+  const replyCount = typeof post.replyCount === "number"
+    ? post.replyCount
+    : Math.max(0, post.reactionCount - (post.likeCount + post.dislikeCount));
   const showHeatBar = Boolean(isHot || typeof post.hotRank === "number");
 
   const className = disabled
@@ -133,7 +140,7 @@ function PostCardComponent({
         <ActionButton
           icon={MessageCircle}
           label="Reply"
-          count={post.reactionCount - (post.likeCount + post.dislikeCount)}
+          count={replyCount}
           onClick={handleAction(onReply)}
           disabled={disabled}
         />

@@ -87,6 +87,18 @@ CREATE TABLE IF NOT EXISTS board_aliases (
   UNIQUE(board_id, alias_normalized),
   UNIQUE(board_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS replies (
+  id TEXT PRIMARY KEY,
+  post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  board_id TEXT NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  author TEXT,
+  body TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS replies_post_created_at_idx ON replies (post_id, created_at ASC);
 CREATE TABLE IF NOT EXISTS reactions (
   id TEXT PRIMARY KEY,
   post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -96,3 +108,12 @@ CREATE TABLE IF NOT EXISTS reactions (
   created_at INTEGER NOT NULL,
   UNIQUE(post_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS follows (
+  follower_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  following_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (follower_id, following_id)
+);
+
+CREATE INDEX IF NOT EXISTS follows_following_idx ON follows (following_id);

@@ -12,7 +12,10 @@ import type {
   UpsertAliasResponse,
   UpdateReactionResponse,
   ReactionAction,
-  BoardSpace
+  BoardSpace,
+  BoardReply,
+  ListRepliesResponse,
+  CreateReplyResponse
 } from '@board-app/shared';
 import { useBoardEvents } from '../hooks/use-board-events';
 import { useToast } from './toast-provider';
@@ -24,38 +27,19 @@ import QuietState from './feed/quiet-state';
 import PostCard from './feed/post-card';
 import PostDetail from './feed/post-detail';
 import { formatBoardDistance } from '../lib/date';
+import { formatBoardName } from '../lib/board';
 
 const DEFAULT_SPACE_TABS = ['Home', 'Student Life', 'Events', 'Sports'];
-interface LocalReply {
-  id: string;
-  postId: string;
-  author: string;
-  body: string;
-  createdAt: number;
-  pending?: boolean;
+type ReplyState = BoardReply & { pending?: boolean };
+
+function extractErrorMessage(value: unknown): string | null {
+  if (value && typeof value === 'object' && 'error' in value) {
+    const { error } = value as { error?: unknown };
+    return error ? String(error) : null;
+  }
+  return null;
 }
 
-function createSeedReplies(post: BoardPost): LocalReply[] {
-  const snippet = post.body.length > 60 ? `${post.body.slice(0, 57)}…` : post.body;
-  const referenceAuthor = post.alias || post.author || post.pseudonym || 'Neighbor';
-  const now = Date.now();
-  return [
-    {
-      id: `${post.id}-seed-1`,
-      postId: post.id,
-      author: 'Board Guide',
-      body: `Thanks for sharing, ${referenceAuthor}. Curious what others think about “${snippet}”.`,
-      createdAt: now - 18 * 60 * 1000
-    },
-    {
-      id: `${post.id}-seed-2`,
-      postId: post.id,
-      author: 'Local Voice',
-      body: 'I’ve noticed the same thing around campus. Keep the updates coming!',
-      createdAt: now - 12 * 60 * 1000
-    }
-  ];
-}
 type HttpError = Error & { status?: number; payload?: unknown };
 
 interface BoardViewerProps {
@@ -136,8 +120,10 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [composerAuthor, setComposerAuthor] = useState('');
   const [composerSubmitting, setComposerSubmitting] = useState(false);
   const [selectedPost, setSelectedPost] = useState<BoardPost | null>(null);
-  const [repliesByPostId, setRepliesByPostId] = useState<Record<string, LocalReply[]>>({});
+  const [repliesByPostId, setRepliesByPostId] = useState<Record<string, ReplyState[]>>({});
   const [replySubmitting, setReplySubmitting] = useState(false);
+  const [repliesLoading, setRepliesLoading] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
   const [activeSpaceId, setActiveSpaceId] = useState('home');
   const sessionToken = session?.token ?? null;
   const { addToast } = useToast();
@@ -325,12 +311,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const isTextOnlyBoard = boardMeta?.textOnly ?? false;
   const radiusMetersDisplay = boardMeta?.radiusMeters ? Math.round(boardMeta.radiusMeters) : null;
   const boardDistanceLabel = boardMeta ? formatBoardDistance(boardMeta.radiusMeters) : null;
-  const friendlyBoardName = useMemo(() => {
-    if (boardMeta?.displayName) return boardMeta.displayName;
-    const cleaned = boardId.replace(/[-_]+/g, ' ').trim();
-    if (!cleaned) return boardId;
-    return cleaned.replace(/\b\w/g, char => char.toUpperCase());
-  }, [boardMeta?.displayName, boardId]);
+  const friendlyBoardName = useMemo(() => formatBoardName(boardId, boardMeta?.displayName), [boardId, boardMeta?.displayName]);
 
   useEffect(() => {
     const connectionStatus = isHeartbeatStale ? 'connecting' : chromeConnectionStatus;
@@ -621,48 +602,134 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const ensureReplies = useCallback((post: BoardPost) => {
     setRepliesByPostId(prev => {
       if (prev[post.id]) return prev;
-      return { ...prev, [post.id]: createSeedReplies(post) };
+      return { ...prev, [post.id]: [] };
     });
   }, []);
+
+  const loadReplies = useCallback(
+    async (post: BoardPost) => {
+      setRepliesLoading(true);
+      setReplyError(null);
+      try {
+        const res = await fetch(
+          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(post.id)}/replies`
+        );
+        const payload = (await res.json().catch(() => ({}))) as ListRepliesResponse;
+        if (!res.ok || !payload?.ok) {
+          const message = extractErrorMessage(payload) ?? `Failed to load replies (${res.status})`;
+          throw new Error(message);
+        }
+        const replies = (payload.replies ?? []).map(reply => ({ ...reply, pending: false })) as ReplyState[];
+        setRepliesByPostId(prev => ({ ...prev, [post.id]: replies }));
+        setReplyError(null);
+      } catch (error) {
+        const message = (error as Error).message ?? 'Failed to load replies';
+        setReplyError(message);
+        addToast({ title: 'Replies unavailable', description: message });
+        setRepliesByPostId(prev => ({ ...prev, [post.id]: prev[post.id] ?? [] }));
+      } finally {
+        setRepliesLoading(false);
+      }
+    },
+    [workerBaseUrl, boardId, addToast]
+  );
 
   const handleCreateReply = useCallback(
     async (post: BoardPost, message: string) => {
       const trimmed = message.trim();
       if (!trimmed) return;
-      const author = alias?.alias || identity?.pseudonym || 'You';
-      const optimistic: LocalReply = {
+      if (!identity || !sessionToken) {
+        addToast({ title: 'Session required', description: 'Register or refresh your identity to reply.' });
+        return;
+      }
+
+      const optimistic: ReplyState = {
         id: `local-${Date.now()}`,
         postId: post.id,
-        author,
+        boardId: post.boardId,
+        userId: identity.id,
+        author: alias?.alias || identity.pseudonym || 'You',
+        alias: alias?.alias ?? null,
+        pseudonym: identity.pseudonym,
         body: trimmed,
         createdAt: Date.now(),
         pending: true
       };
 
+      let optimisticReplies: ReplyState[] = [];
+
       setRepliesByPostId(prev => {
         const existing = prev[post.id] ?? [];
-        return { ...prev, [post.id]: [...existing, optimistic] };
+        optimisticReplies = [...existing, optimistic];
+        return { ...prev, [post.id]: optimisticReplies };
       });
+      setPosts(prev =>
+        prev.map(item =>
+          item.id === post.id ? { ...item, replyCount: optimisticReplies.length } : item
+        )
+      );
+      setSelectedPost(current =>
+        current && current.id === post.id ? { ...current, replyCount: optimisticReplies.length } : current
+      );
 
       setReplySubmitting(true);
-      addToast({ title: 'Reply posted', description: 'Replies sync is coming soon.' });
-
       try {
-        await new Promise(resolve => setTimeout(resolve, 650));
+        const res = await fetch(
+          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(post.id)}/replies`,
+          {
+            method: 'POST',
+            headers: buildHeaders({ 'content-type': 'application/json' }),
+            body: JSON.stringify({ body: trimmed, userId: identity.id, author: alias?.alias ?? identity.pseudonym })
+          }
+        );
+        const payload = (await res.json().catch(() => ({}))) as CreateReplyResponse;
+        if (!res.ok || !payload?.ok) {
+          const message = extractErrorMessage(payload) ?? `Failed to send reply (${res.status})`;
+          throw new Error(message);
+        }
+        const persisted: ReplyState = { ...payload.reply, pending: false };
+        setReplyError(null);
+        let nextReplies: ReplyState[] = [];
         setRepliesByPostId(prev => {
           const existing = prev[post.id] ?? [];
+          nextReplies = existing.map(reply => (reply.id === optimistic.id ? persisted : reply));
           return {
             ...prev,
-            [post.id]: existing.map(reply =>
-              reply.id === optimistic.id ? { ...reply, pending: false } : reply
-            )
+            [post.id]: nextReplies
           };
         });
+        const resolvedReplyCount = nextReplies.length;
+        setPosts(prev =>
+          prev.map(item => (item.id === post.id ? { ...item, replyCount: resolvedReplyCount } : item))
+        );
+        setSelectedPost(current =>
+          current && current.id === post.id ? { ...current, replyCount: resolvedReplyCount } : current
+        );
+      } catch (error) {
+        const message = (error as Error).message ?? 'Failed to send reply';
+        addToast({ title: 'Reply failed', description: message });
+        let revertedReplies: ReplyState[] = [];
+        setRepliesByPostId(prev => {
+          const existing = prev[post.id] ?? [];
+          revertedReplies = existing.filter(reply => reply.id !== optimistic.id);
+          return {
+            ...prev,
+            [post.id]: revertedReplies
+          };
+        });
+        setPosts(prev =>
+          prev.map(item =>
+            item.id === post.id ? { ...item, replyCount: revertedReplies.length } : item
+          )
+        );
+        setSelectedPost(current =>
+          current && current.id === post.id ? { ...current, replyCount: revertedReplies.length } : current
+        );
       } finally {
         setReplySubmitting(false);
       }
     },
-    [alias?.alias, identity?.pseudonym, addToast]
+    [alias?.alias, identity, sessionToken, workerBaseUrl, boardId, buildHeaders, addToast]
   );
 
   const boardAliasLookup = useMemo(() => {
@@ -777,6 +844,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         if (signal?.aborted) return;
         setBoardMeta(body.board ?? null);
         setPosts(body.posts ?? []);
+        setSelectedPost(prev => {
+          if (!prev) return prev;
+          const updated = body.posts?.find(item => item.id === prev.id);
+          return updated ? { ...prev, ...updated } : prev;
+        });
         setConnectionCount(body.realtimeConnections ?? 0);
         setBackendSpaces(body.spaces ?? []);
         setFeedError(null);
@@ -941,8 +1013,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   useEffect(() => {
     if (selectedPost) {
       ensureReplies(selectedPost);
+      loadReplies(selectedPost).catch(() => null);
     }
-  }, [selectedPost, ensureReplies]);
+  }, [selectedPost, ensureReplies, loadReplies]);
 
   useEffect(() => {
     if (posts.length === 0) {
@@ -1662,6 +1735,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           distanceLabel={boardDistanceLabel}
           replies={activeReplies}
           isSubmitting={replySubmitting}
+          isLoading={repliesLoading}
+          error={replyError}
           onCreateReply={body => handleCreateReply(selectedPost, body)}
           onClose={() => setSelectedPost(null)}
         />

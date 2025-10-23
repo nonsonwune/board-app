@@ -2,24 +2,20 @@
 
 import { FormEvent, useState } from "react";
 import { X } from "lucide-react";
-import type { BoardPost } from "@board-app/shared";
+import type { BoardPost, BoardReply } from "@board-app/shared";
 import PostCard from "./post-card";
 import { formatRelativeTime } from "../../lib/date";
 
-export interface ReplySummary {
-  id: string;
-  author: string;
-  body: string;
-  createdAt: number;
-  pending?: boolean;
-}
+type ReplyView = BoardReply & { pending?: boolean };
 
 interface PostDetailProps {
   post: BoardPost;
   boardName?: string | null;
   distanceLabel?: string | null;
-  replies: ReplySummary[];
+  replies: ReplyView[];
   isSubmitting?: boolean;
+  isLoading?: boolean;
+  error?: string | null;
   onCreateReply: (body: string) => Promise<void> | void;
   onClose: () => void;
 }
@@ -30,6 +26,8 @@ export default function PostDetail({
   distanceLabel,
   replies,
   isSubmitting,
+  isLoading,
+  error: repliesError,
   onCreateReply,
   onClose
 }: PostDetailProps) {
@@ -82,28 +80,34 @@ export default function PostDetail({
         />
 
         <section className="space-y-3 rounded-2xl border border-border/60 bg-surface p-4">
-          {replies.length === 0 ? (
+          {isLoading ? (
+            <p className="text-sm text-text-tertiary">Loading replies…</p>
+          ) : replies.length === 0 ? (
             <p className="text-sm text-text-secondary">
               Be the first to reply and keep the conversation going.
             </p>
           ) : (
-            replies.map(reply => (
+            replies.map(reply => {
+              const displayAuthor = reply.alias || reply.author || reply.pseudonym || 'Anon';
+              return (
               <article
                 key={reply.id}
                 className={`rounded-xl border px-3 py-2 text-sm ${reply.pending ? 'border-warning/50 bg-warning/10 text-warning' : 'border-border/60 bg-surface-raised text-text-secondary'}`}
               >
                 <header className="flex items-center justify-between text-xs text-text-tertiary">
-                  <span className="font-semibold text-text-primary">{reply.author}</span>
+                  <span className="font-semibold text-text-primary">{displayAuthor}</span>
                   <time>{formatRelativeTime(reply.createdAt)}</time>
                 </header>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-text-secondary">{reply.body}</p>
                 {reply.pending && <p className="mt-1 text-xs text-warning">Sending…</p>}
               </article>
-            ))
+              );
+            })
           )}
         </section>
 
         <form onSubmit={handleSubmit} className="space-y-3 rounded-2xl border border-border/60 bg-surface p-4">
+          {repliesError && <p className="text-xs text-warning">{repliesError}</p>}
           <label className="block text-xs uppercase tracking-[2px] text-text-tertiary">
             Reply
             <textarea

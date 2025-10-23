@@ -2,7 +2,7 @@ var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
 // dist/index.js
-var schema_default = "CREATE TABLE IF NOT EXISTS boards (\n  id TEXT PRIMARY KEY,\n  display_name TEXT NOT NULL,\n  description TEXT,\n  created_at INTEGER NOT NULL,\n  radius_meters INTEGER NOT NULL DEFAULT 1500,\n  radius_state TEXT,\n  radius_updated_at INTEGER,\n  phase_mode TEXT NOT NULL DEFAULT 'default',\n  text_only INTEGER NOT NULL DEFAULT 0\n);\nCREATE TABLE IF NOT EXISTS posts (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,\n  author TEXT,\n  body TEXT NOT NULL,\n  created_at INTEGER NOT NULL,\n  reaction_count INTEGER NOT NULL DEFAULT 0,\n  like_count INTEGER NOT NULL DEFAULT 0,\n  dislike_count INTEGER NOT NULL DEFAULT 0\n);\nCREATE INDEX IF NOT EXISTS posts_board_created_at_idx ON posts (board_id, created_at DESC);\nCREATE TABLE IF NOT EXISTS board_events (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  payload TEXT NOT NULL,\n  trace_id TEXT NOT NULL,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS board_events_board_created_at_idx ON board_events (board_id, created_at DESC);\nCREATE TABLE IF NOT EXISTS dead_zone_alerts (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n  streak INTEGER NOT NULL,\n  post_count INTEGER NOT NULL,\n  threshold INTEGER NOT NULL,\n  window_start INTEGER NOT NULL,\n  window_end INTEGER NOT NULL,\n  window_ms INTEGER NOT NULL,\n  triggered_at INTEGER NOT NULL,\n  alert_level TEXT NOT NULL DEFAULT 'dead_zone',\n  trace_id TEXT NOT NULL,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS dead_zone_alerts_board_triggered_at_idx ON dead_zone_alerts (board_id, triggered_at DESC);\nCREATE TABLE IF NOT EXISTS access_identity_events (\n  id TEXT PRIMARY KEY,\n  event_type TEXT NOT NULL,\n  subject TEXT NOT NULL,\n  user_id TEXT,\n  email TEXT,\n  trace_id TEXT,\n  metadata TEXT,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS access_identity_events_event_created_idx ON access_identity_events (event_type, created_at DESC);\nCREATE TABLE IF NOT EXISTS sessions (\n  token TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  created_at INTEGER NOT NULL,\n  expires_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS sessions_user_expires_idx ON sessions (user_id, expires_at DESC);\nCREATE TABLE IF NOT EXISTS users (\n  id TEXT PRIMARY KEY,\n  pseudonym TEXT NOT NULL UNIQUE,\n  pseudonym_normalized TEXT NOT NULL UNIQUE,\n  created_at INTEGER NOT NULL,\n  status TEXT NOT NULL DEFAULT 'active'\n);\nCREATE TABLE IF NOT EXISTS user_access_links (\n  access_subject TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,\n  email TEXT,\n  created_at INTEGER NOT NULL,\n  updated_at INTEGER NOT NULL\n);\nCREATE TABLE IF NOT EXISTS board_aliases (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL,\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  alias TEXT NOT NULL,\n  alias_normalized TEXT NOT NULL,\n  created_at INTEGER NOT NULL,\n  UNIQUE(board_id, alias_normalized),\n  UNIQUE(board_id, user_id)\n);\nCREATE TABLE IF NOT EXISTS reactions (\n  id TEXT PRIMARY KEY,\n  post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,\n  board_id TEXT NOT NULL,\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  reaction INTEGER NOT NULL,\n  created_at INTEGER NOT NULL,\n  UNIQUE(post_id, user_id)\n);\n";
+var schema_default = "CREATE TABLE IF NOT EXISTS boards (\n  id TEXT PRIMARY KEY,\n  display_name TEXT NOT NULL,\n  description TEXT,\n  created_at INTEGER NOT NULL,\n  radius_meters INTEGER NOT NULL DEFAULT 1500,\n  radius_state TEXT,\n  radius_updated_at INTEGER,\n  phase_mode TEXT NOT NULL DEFAULT 'default',\n  text_only INTEGER NOT NULL DEFAULT 0\n);\nCREATE TABLE IF NOT EXISTS posts (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,\n  author TEXT,\n  body TEXT NOT NULL,\n  created_at INTEGER NOT NULL,\n  reaction_count INTEGER NOT NULL DEFAULT 0,\n  like_count INTEGER NOT NULL DEFAULT 0,\n  dislike_count INTEGER NOT NULL DEFAULT 0\n);\nCREATE INDEX IF NOT EXISTS posts_board_created_at_idx ON posts (board_id, created_at DESC);\nCREATE TABLE IF NOT EXISTS board_events (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL,\n  event_type TEXT NOT NULL,\n  payload TEXT NOT NULL,\n  trace_id TEXT NOT NULL,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS board_events_board_created_at_idx ON board_events (board_id, created_at DESC);\nCREATE TABLE IF NOT EXISTS dead_zone_alerts (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n  streak INTEGER NOT NULL,\n  post_count INTEGER NOT NULL,\n  threshold INTEGER NOT NULL,\n  window_start INTEGER NOT NULL,\n  window_end INTEGER NOT NULL,\n  window_ms INTEGER NOT NULL,\n  triggered_at INTEGER NOT NULL,\n  alert_level TEXT NOT NULL DEFAULT 'dead_zone',\n  trace_id TEXT NOT NULL,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS dead_zone_alerts_board_triggered_at_idx ON dead_zone_alerts (board_id, triggered_at DESC);\nCREATE TABLE IF NOT EXISTS access_identity_events (\n  id TEXT PRIMARY KEY,\n  event_type TEXT NOT NULL,\n  subject TEXT NOT NULL,\n  user_id TEXT,\n  email TEXT,\n  trace_id TEXT,\n  metadata TEXT,\n  created_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS access_identity_events_event_created_idx ON access_identity_events (event_type, created_at DESC);\nCREATE TABLE IF NOT EXISTS sessions (\n  token TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  created_at INTEGER NOT NULL,\n  expires_at INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS sessions_user_expires_idx ON sessions (user_id, expires_at DESC);\nCREATE TABLE IF NOT EXISTS users (\n  id TEXT PRIMARY KEY,\n  pseudonym TEXT NOT NULL UNIQUE,\n  pseudonym_normalized TEXT NOT NULL UNIQUE,\n  created_at INTEGER NOT NULL,\n  status TEXT NOT NULL DEFAULT 'active'\n);\nCREATE TABLE IF NOT EXISTS user_access_links (\n  access_subject TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,\n  email TEXT,\n  created_at INTEGER NOT NULL,\n  updated_at INTEGER NOT NULL\n);\nCREATE TABLE IF NOT EXISTS board_aliases (\n  id TEXT PRIMARY KEY,\n  board_id TEXT NOT NULL,\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  alias TEXT NOT NULL,\n  alias_normalized TEXT NOT NULL,\n  created_at INTEGER NOT NULL,\n  UNIQUE(board_id, alias_normalized),\n  UNIQUE(board_id, user_id)\n);\n\nCREATE TABLE IF NOT EXISTS replies (\n  id TEXT PRIMARY KEY,\n  post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,\n  board_id TEXT NOT NULL,\n  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,\n  author TEXT,\n  body TEXT NOT NULL,\n  created_at INTEGER NOT NULL\n);\n\nCREATE INDEX IF NOT EXISTS replies_post_created_at_idx ON replies (post_id, created_at ASC);\nCREATE TABLE IF NOT EXISTS reactions (\n  id TEXT PRIMARY KEY,\n  post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,\n  board_id TEXT NOT NULL,\n  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  reaction INTEGER NOT NULL,\n  created_at INTEGER NOT NULL,\n  UNIQUE(post_id, user_id)\n);\n\nCREATE TABLE IF NOT EXISTS follows (\n  follower_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  following_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  created_at INTEGER NOT NULL,\n  PRIMARY KEY (follower_id, following_id)\n);\n\nCREATE INDEX IF NOT EXISTS follows_following_idx ON follows (following_id);\n";
 var BoardRoom = class {
   static {
     __name(this, "BoardRoom");
@@ -606,7 +606,7 @@ async function getOrCreateBoard(env, boardId) {
   };
 }
 __name(getOrCreateBoard, "getOrCreateBoard");
-async function createPost(env, boardId, body, author, userId, alias, pseudonym, images) {
+async function createPost(env, boardId, body, author, userId, alias, pseudonym, images, boardName) {
   await ensureSchema(env);
   const id = crypto.randomUUID();
   const createdAt = Date.now();
@@ -618,6 +618,7 @@ async function createPost(env, boardId, body, author, userId, alias, pseudonym, 
   return {
     id,
     boardId,
+    boardName: boardName ?? null,
     userId: userId ?? null,
     author: author ?? null,
     alias: alias ?? author ?? null,
@@ -627,11 +628,80 @@ async function createPost(env, boardId, body, author, userId, alias, pseudonym, 
     reactionCount: 0,
     likeCount: 0,
     dislikeCount: 0,
+    replyCount: 0,
     hotRank,
     images: images && images.length > 0 ? images : void 0
   };
 }
 __name(createPost, "createPost");
+async function createReply(env, options) {
+  await ensureSchema(env);
+  const exists = await env.BOARD_DB.prepare(
+    "SELECT 1 FROM posts WHERE id = ?1 AND board_id = ?2"
+  ).bind(options.postId, options.board.id).first();
+  if (!exists) {
+    throw new ApiError(404, { error: "post not found" });
+  }
+  const id = crypto.randomUUID();
+  const createdAt = Date.now();
+  await env.BOARD_DB.prepare(
+    "INSERT INTO replies (id, post_id, board_id, user_id, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+  ).bind(id, options.postId, options.board.id, options.user?.id ?? null, options.author, options.body, createdAt).run();
+  return {
+    id,
+    postId: options.postId,
+    boardId: options.board.id,
+    userId: options.user?.id ?? null,
+    author: options.author,
+    alias: options.alias,
+    pseudonym: options.user?.pseudonym ?? null,
+    body: options.body,
+    createdAt
+  };
+}
+__name(createReply, "createReply");
+async function listReplies(env, boardId, postId, options) {
+  await ensureSchema(env);
+  const limit = options.limit ?? 50;
+  let cursorCreatedAt = 0;
+  let cursorId = "";
+  if (options.cursor) {
+    const [timestamp, id] = options.cursor.split(":");
+    cursorCreatedAt = Number(timestamp) || 0;
+    cursorId = id ?? "";
+  }
+  const rows = await env.BOARD_DB.prepare(
+    `SELECT
+        r.id,
+        r.post_id,
+        r.board_id,
+        r.user_id,
+        r.author,
+        r.body,
+        r.created_at,
+        a.alias AS board_alias,
+        u.pseudonym AS pseudonym
+       FROM replies r
+       LEFT JOIN board_aliases a ON a.board_id = r.board_id AND a.user_id = r.user_id
+       LEFT JOIN users u ON u.id = r.user_id
+      WHERE r.board_id = ?1
+        AND r.post_id = ?2
+        AND (
+          r.created_at > ?3
+          OR (r.created_at = ?3 AND r.id > ?4)
+        )
+      ORDER BY r.created_at ASC, r.id ASC
+      LIMIT ?5`
+  ).bind(boardId, postId, cursorCreatedAt, cursorId, limit).all();
+  const replies = rows.results?.map(mapReplyRowToReply) ?? [];
+  let nextCursor = null;
+  if (rows.results && rows.results.length === limit) {
+    const last = rows.results[rows.results.length - 1];
+    nextCursor = `${last.created_at}:${last.id}`;
+  }
+  return { replies, cursor: nextCursor };
+}
+__name(listReplies, "listReplies");
 async function listPosts(env, boardId, limit, options = {}) {
   await ensureSchema(env);
   const now = options.now ?? Date.now();
@@ -646,6 +716,8 @@ async function listPosts(env, boardId, limit, options = {}) {
         p.reaction_count,
         p.like_count,
         p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
         ba.alias AS board_alias,
         u.pseudonym
        FROM posts p
@@ -654,33 +726,19 @@ async function listPosts(env, boardId, limit, options = {}) {
         AND ba.user_id = p.user_id
        LEFT JOIN users u
          ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
        WHERE p.board_id = ?1
        ORDER BY p.created_at DESC
        LIMIT ?2`
   ).bind(boardId, limit).all();
-  return (results ?? []).map((row) => {
-    const hotRank = calculateHotRank(
-      row.like_count,
-      row.dislike_count,
-      row.reaction_count,
-      row.created_at,
-      now
-    );
-    return {
-      id: row.id,
-      boardId: row.board_id,
-      userId: row.user_id ?? null,
-      author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
-      alias: row.board_alias ?? row.author ?? null,
-      pseudonym: row.pseudonym ?? null,
-      body: row.body,
-      createdAt: row.created_at,
-      reactionCount: row.reaction_count,
-      likeCount: row.like_count,
-      dislikeCount: row.dislike_count,
-      hotRank
-    };
-  }).sort((a, b) => {
+  return (results ?? []).map((row) => mapPostRowToBoardPost(row, now)).sort((a, b) => {
     const rankDelta = (b.hotRank ?? 0) - (a.hotRank ?? 0);
     if (Math.abs(rankDelta) > 1e-6) {
       return rankDelta;
@@ -689,6 +747,267 @@ async function listPosts(env, boardId, limit, options = {}) {
   });
 }
 __name(listPosts, "listPosts");
+function mapPostRowToBoardPost(row, now) {
+  const likeCount = row.like_count ?? 0;
+  const dislikeCount = row.dislike_count ?? 0;
+  const reactionCount = row.reaction_count ?? likeCount + dislikeCount;
+  const replyCount = row.reply_count ?? 0;
+  const hotRank = calculateHotRank(likeCount, dislikeCount, reactionCount, row.created_at, now);
+  return {
+    id: row.id,
+    boardId: row.board_id,
+    boardName: row.board_name ?? null,
+    userId: row.user_id ?? null,
+    author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
+    alias: row.board_alias ?? row.author ?? null,
+    pseudonym: row.pseudonym ?? null,
+    body: row.body,
+    createdAt: row.created_at,
+    reactionCount,
+    likeCount,
+    dislikeCount,
+    replyCount,
+    hotRank
+  };
+}
+__name(mapPostRowToBoardPost, "mapPostRowToBoardPost");
+function parsePostCursor(cursor) {
+  if (!cursor) {
+    return null;
+  }
+  const [timestamp, id] = cursor.split(":");
+  const createdAt = Number(timestamp);
+  if (!Number.isFinite(createdAt) || !id) {
+    return null;
+  }
+  return { createdAt, id };
+}
+__name(parsePostCursor, "parsePostCursor");
+function extractTrendingTopics(posts, limit = 5) {
+  const hashtagRegex = /#[\p{L}0-9_-]+/gu;
+  const counts = /* @__PURE__ */ new Map();
+  for (const post of posts) {
+    const matches = post.body.match(hashtagRegex);
+    if (!matches) continue;
+    for (const rawTag of matches) {
+      const normalized = rawTag.toLowerCase();
+      const entry = counts.get(normalized);
+      if (entry) {
+        entry.count += 1;
+      } else {
+        counts.set(normalized, { count: 1, label: rawTag });
+      }
+    }
+  }
+  return Array.from(counts.values()).sort((a, b) => b.count - a.count).slice(0, limit).map((entry) => entry.label);
+}
+__name(extractTrendingTopics, "extractTrendingTopics");
+function calculateInfluenceScore(posts) {
+  if (!posts.length) {
+    return 0;
+  }
+  let positive = 0;
+  let negative = 0;
+  for (const post of posts) {
+    positive += post.likeCount ?? 0;
+    positive += (post.replyCount ?? 0) * 0.5;
+    negative += (post.dislikeCount ?? 0) * 0.7;
+  }
+  const raw = positive - negative;
+  const normalized = Math.max(0, Math.min(1, raw / (posts.length * 12 + 12)));
+  return Number(normalized.toFixed(2));
+}
+__name(calculateInfluenceScore, "calculateInfluenceScore");
+async function listUserPosts(env, userId, limit, options = {}) {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const cappedLimit = Math.max(1, Math.min(limit, 50));
+  const { results } = await env.BOARD_DB.prepare(
+    `SELECT
+        p.id,
+        p.board_id,
+        p.user_id,
+        p.author,
+        p.body,
+        p.created_at,
+        p.reaction_count,
+        p.like_count,
+        p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
+        ba.alias AS board_alias,
+        u.pseudonym
+       FROM posts p
+       LEFT JOIN board_aliases ba
+         ON ba.board_id = p.board_id
+        AND ba.user_id = p.user_id
+       LEFT JOIN users u
+         ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
+      WHERE p.user_id = ?
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ?`
+  ).bind(userId, cappedLimit).all();
+  return (results ?? []).map((row) => mapPostRowToBoardPost(row, now));
+}
+__name(listUserPosts, "listUserPosts");
+async function listFollowingPosts(env, followerId, options = {}) {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
+  const cursor = parsePostCursor(options.cursor);
+  const cursorCreatedAt = cursor?.createdAt ?? Number.MAX_SAFE_INTEGER;
+  const cursorId = cursor?.id ?? "\uFFFF";
+  const sql = `SELECT
+        p.id,
+        p.board_id,
+        p.user_id,
+        p.author,
+        p.body,
+        p.created_at,
+        p.reaction_count,
+        p.like_count,
+        p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
+        ba.alias AS board_alias,
+       u.pseudonym
+       FROM posts p
+       LEFT JOIN board_aliases ba
+         ON ba.board_id = p.board_id
+        AND ba.user_id = p.user_id
+       LEFT JOIN users u
+         ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
+      WHERE p.user_id IS NOT NULL
+        AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?1)
+        AND (p.created_at < ?2 OR (p.created_at = ?2 AND p.id < ?3))
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ?4`;
+  const { results } = await env.BOARD_DB.prepare(sql).bind(followerId, cursorCreatedAt, cursorId, limit + 1).all();
+  const rows = results ?? [];
+  const posts = rows.slice(0, limit).map((row) => mapPostRowToBoardPost(row, now));
+  const hasMore = rows.length > limit;
+  const nextCursor = hasMore && rows[limit - 1] ? `${rows[limit - 1].created_at}:${rows[limit - 1].id}` : null;
+  return { posts, cursor: nextCursor, hasMore };
+}
+__name(listFollowingPosts, "listFollowingPosts");
+async function searchBoardPosts(env, options = {}) {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
+  const cursor = parsePostCursor(options.cursor);
+  const windowMs = options.windowMs ?? 7 * 24 * 60 * 60 * 1e3;
+  const minReactions = options.minReactions ?? 10;
+  const extendedWindowMs = Math.max(windowMs, 30 * 24 * 60 * 60 * 1e3);
+  const earliest = now - extendedWindowMs;
+  const boardParam = options.boardId ?? null;
+  const likeParam = options.query?.trim() ? `%${options.query.trim().replace(/[%_]/g, (match) => `\\${match}`)}%` : null;
+  const cursorCreatedAt = cursor?.createdAt ?? Number.MAX_SAFE_INTEGER;
+  const cursorId = cursor?.id ?? "\uFFFF";
+  const sql = `SELECT
+        p.id,
+        p.board_id,
+        p.user_id,
+        p.author,
+        p.body,
+        p.created_at,
+        p.reaction_count,
+        p.like_count,
+        p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
+        ba.alias AS board_alias,
+       u.pseudonym
+       FROM posts p
+       LEFT JOIN board_aliases ba
+         ON ba.board_id = p.board_id
+        AND ba.user_id = p.user_id
+       LEFT JOIN users u
+         ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
+      WHERE p.created_at >= ?1
+        AND (?2 IS NULL OR p.board_id = ?2)
+        AND (?3 IS NULL OR p.body LIKE ?3)
+        AND (p.created_at < ?4 OR (p.created_at = ?4 AND p.id < ?5))
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ?6`;
+  const { results } = await env.BOARD_DB.prepare(sql).bind(earliest, boardParam, likeParam, cursorCreatedAt, cursorId, limit + 1).all();
+  const rows = results ?? [];
+  const filtered = rows.filter((row) => row.created_at >= now - windowMs || (row.reaction_count ?? 0) >= minReactions).slice(0, limit);
+  const posts = filtered.map((row) => mapPostRowToBoardPost(row, now));
+  const hasMore = rows.length > limit;
+  let anchor;
+  if (hasMore) {
+    anchor = rows[limit - 1];
+  } else if (filtered.length > 0) {
+    anchor = filtered[filtered.length - 1];
+  }
+  const nextCursor = hasMore && anchor ? `${anchor.created_at}:${anchor.id}` : null;
+  return { posts, cursor: nextCursor, hasMore };
+}
+__name(searchBoardPosts, "searchBoardPosts");
+async function getFollowCounts(env, userId) {
+  await ensureSchema(env);
+  const followerRow = await env.BOARD_DB.prepare("SELECT COUNT(*) AS follower_count FROM follows WHERE following_id = ?").bind(userId).first();
+  const followingRow = await env.BOARD_DB.prepare("SELECT COUNT(*) AS following_count FROM follows WHERE follower_id = ?").bind(userId).first();
+  return {
+    followerCount: followerRow?.follower_count ?? 0,
+    followingCount: followingRow?.following_count ?? 0
+  };
+}
+__name(getFollowCounts, "getFollowCounts");
+async function isFollowing(env, followerId, targetId) {
+  await ensureSchema(env);
+  const existing = await env.BOARD_DB.prepare(
+    "SELECT 1 FROM follows WHERE follower_id = ?1 AND following_id = ?2 LIMIT 1"
+  ).bind(followerId, targetId).first();
+  return Boolean(existing);
+}
+__name(isFollowing, "isFollowing");
+async function listFollowingIds(env, userId, limit = 50) {
+  await ensureSchema(env);
+  const { results } = await env.BOARD_DB.prepare(
+    "SELECT following_id FROM follows WHERE follower_id = ? ORDER BY created_at DESC LIMIT ?"
+  ).bind(userId, Math.max(1, Math.min(limit, 200))).all();
+  return (results ?? []).map((row) => row.following_id);
+}
+__name(listFollowingIds, "listFollowingIds");
+async function setFollowState(env, followerId, targetId, follow) {
+  await ensureSchema(env);
+  if (follow) {
+    await env.BOARD_DB.prepare(
+      `INSERT INTO follows (follower_id, following_id, created_at)
+         VALUES (?1, ?2, ?3)
+       ON CONFLICT(follower_id, following_id) DO NOTHING`
+    ).bind(followerId, targetId, Date.now()).run();
+    return true;
+  }
+  await env.BOARD_DB.prepare("DELETE FROM follows WHERE follower_id = ?1 AND following_id = ?2").bind(followerId, targetId).run();
+  return false;
+}
+__name(setFollowState, "setFollowState");
 async function issueSessionTicket(env, userId) {
   await ensureSchema(env);
   const token = crypto.randomUUID().replace(/-/g, "");
@@ -994,6 +1313,21 @@ async function getBoardAlias(env, boardId, userId) {
   };
 }
 __name(getBoardAlias, "getBoardAlias");
+async function listAliasesForUser(env, userId, limit = 100) {
+  await ensureSchema(env);
+  const { results } = await env.BOARD_DB.prepare(
+    "SELECT id, board_id, user_id, alias, alias_normalized, created_at FROM board_aliases WHERE user_id = ? ORDER BY created_at DESC LIMIT ?"
+  ).bind(userId, Math.max(1, Math.min(limit, 200))).all();
+  return (results ?? []).map((record) => ({
+    id: record.id,
+    boardId: record.board_id,
+    userId: record.user_id,
+    alias: record.alias,
+    aliasNormalized: record.alias_normalized,
+    createdAt: record.created_at
+  }));
+}
+__name(listAliasesForUser, "listAliasesForUser");
 async function applyReaction(env, boardId, postId, userId, action) {
   await ensureSchema(env);
   const post = await env.BOARD_DB.prepare(
@@ -1279,8 +1613,23 @@ var index_default = {
       if (url.pathname.match(/^\/boards\/[^/]+\/posts\/[^/]+\/reactions$/)) {
         return withCors(request, await handleUpdateReaction(request, env, ctx, url));
       }
+      if (url.pathname.match(/^\/boards\/[^/]+\/posts\/[^/]+\/replies$/)) {
+        return withCors(request, await handleReplies(request, env, ctx, url));
+      }
       if (url.pathname.match(/^\/boards\/[^/]+\/feed$/)) {
         return withCors(request, await handleFeed(request, env, url));
+      }
+      if (url.pathname === "/follow") {
+        return withCors(request, await handleFollow(request, env));
+      }
+      if (url.pathname === "/following/feed") {
+        return withCors(request, await handleFollowingFeed(request, env, url));
+      }
+      if (url.pathname === "/search/posts") {
+        return withCors(request, await handleSearchPosts(request, env, url));
+      }
+      if (url.pathname.match(/^\/profiles\/[^/]+$/)) {
+        return withCors(request, await handleProfile(request, env, url));
       }
       if (url.pathname === "/metrics/dead-zones") {
         if (request.method !== "GET") {
@@ -1627,7 +1976,8 @@ async function handleCreatePost(request, env, ctx, url) {
     userId,
     aliasRecord?.alias ?? null,
     user?.pseudonym ?? null,
-    imageRefs
+    imageRefs,
+    board.display_name ?? null
   );
   const postWithImages = imageRefs && imageRefs.length > 0 ? { ...post, images: imageRefs } : post;
   const room = getBoardRoom(boardId);
@@ -1657,6 +2007,90 @@ async function handleCreatePost(request, env, ctx, url) {
   });
 }
 __name(handleCreatePost, "handleCreatePost");
+async function handleReplies(request, env, ctx, url) {
+  const match = url.pathname.match(/^\/boards\/([^/]+)\/posts\/([^/]+)\/replies$/);
+  if (!match) {
+    throw new ApiError(404, { error: "not found" });
+  }
+  const boardId = decodeURIComponent(match[1]);
+  const postId = decodeURIComponent(match[2]);
+  if (request.method === "GET") {
+    const urlCursor = url.searchParams.get("cursor") ?? null;
+    const limitParam = Number(url.searchParams.get("limit") ?? "50");
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 50;
+    const { replies, cursor } = await listReplies(env, boardId, postId, { limit, cursor: urlCursor });
+    const response2 = {
+      ok: true,
+      postId,
+      replies,
+      cursor,
+      hasMore: Boolean(cursor)
+    };
+    return new Response(JSON.stringify(response2), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  if (request.method !== "POST") {
+    return new Response(JSON.stringify({ error: "method not allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+  const traceId = request.headers.get("cf-ray") ?? crypto.randomUUID();
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    throw new ApiError(400, { error: "invalid JSON payload", trace_id: traceId });
+  }
+  const body = payload.body?.trim();
+  if (!body) {
+    throw new ApiError(400, { error: "reply body required", trace_id: traceId });
+  }
+  if (body.length > 300) {
+    throw new ApiError(400, { error: "reply body must be 300 characters or fewer", trace_id: traceId });
+  }
+  const userId = payload.userId?.trim() || null;
+  const authorInput = payload.author?.trim()?.slice(0, 64) ?? null;
+  let author = authorInput;
+  let user = null;
+  let aliasRecord = null;
+  if (userId) {
+    await ensureSession(request, env, userId);
+    user = await getUserById(env, userId);
+    if (!user) {
+      throw new ApiError(404, { error: "user not found", trace_id: traceId });
+    }
+    aliasRecord = await getBoardAlias(env, boardId, userId);
+    author = aliasRecord?.alias ?? author ?? user.pseudonym;
+  }
+  const board = await getOrCreateBoard(env, boardId);
+  const reply = await createReply(env, {
+    board,
+    postId,
+    body,
+    author,
+    user,
+    alias: aliasRecord?.alias ?? null
+  });
+  ctx.waitUntil(
+    persistEvent(env, {
+      id: crypto.randomUUID(),
+      boardId,
+      event: "reply.created",
+      data: reply,
+      traceId,
+      timestamp: Date.now()
+    }, boardId)
+  );
+  const response = { ok: true, reply };
+  return new Response(JSON.stringify(response), {
+    status: 201,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+__name(handleReplies, "handleReplies");
 async function handleLinkIdentity(request, env) {
   if (request.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
@@ -2075,6 +2509,166 @@ async function handleUpdateReaction(request, env, ctx, url) {
   }
 }
 __name(handleUpdateReaction, "handleUpdateReaction");
+async function handleFollow(request, env) {
+  if (request.method !== "POST") {
+    return new Response(JSON.stringify({ error: "method not allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json", Allow: "POST" }
+    });
+  }
+  const session = await getSessionFromRequest(request, env);
+  const followerId = session.user_id;
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    throw new ApiError(400, { error: "invalid JSON body" });
+  }
+  const targetUserId = payload?.targetUserId?.trim();
+  if (!targetUserId) {
+    throw new ApiError(400, { error: "targetUserId is required" });
+  }
+  if (targetUserId === followerId) {
+    throw new ApiError(400, { error: "cannot follow yourself" });
+  }
+  const target = await getUserById(env, targetUserId);
+  if (!target) {
+    throw new ApiError(404, { error: "target user not found" });
+  }
+  const follow = payload.action !== "unfollow";
+  const following = await setFollowState(env, followerId, targetUserId, follow);
+  const targetCounts = await getFollowCounts(env, targetUserId);
+  const viewerCounts = followerId === targetUserId ? targetCounts : await getFollowCounts(env, followerId);
+  const body = {
+    ok: true,
+    following,
+    followerCount: targetCounts.followerCount,
+    followingCount: viewerCounts.followingCount
+  };
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+__name(handleFollow, "handleFollow");
+async function handleFollowingFeed(request, env, url) {
+  if (request.method !== "GET") {
+    return new Response(JSON.stringify({ error: "method not allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json", Allow: "GET" }
+    });
+  }
+  const session = await getSessionFromRequest(request, env);
+  const limitParam = Number(url.searchParams.get("limit") ?? "20");
+  const limit = Number.isFinite(limitParam) ? limitParam : 20;
+  const cursor = url.searchParams.get("cursor");
+  const feed = await listFollowingPosts(env, session.user_id, { limit, cursor });
+  const response = {
+    ok: true,
+    posts: feed.posts,
+    cursor: feed.cursor,
+    hasMore: feed.hasMore
+  };
+  return new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+__name(handleFollowingFeed, "handleFollowingFeed");
+async function handleSearchPosts(request, env, url) {
+  if (request.method !== "GET") {
+    return new Response(JSON.stringify({ error: "method not allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json", Allow: "GET" }
+    });
+  }
+  const boardId = url.searchParams.get("boardId");
+  const query = url.searchParams.get("q");
+  const limitParam = Number(url.searchParams.get("limit") ?? "20");
+  const limit = Number.isFinite(limitParam) ? limitParam : 20;
+  const cursor = url.searchParams.get("cursor");
+  const windowParam = Number(url.searchParams.get("windowMs") ?? "0");
+  const windowMs = Number.isFinite(windowParam) && windowParam > 0 ? windowParam : void 0;
+  const search = await searchBoardPosts(env, {
+    boardId,
+    query,
+    limit,
+    cursor,
+    windowMs
+  });
+  let topics = [];
+  if (boardId) {
+    const trendingSource = await listPosts(env, boardId, 40);
+    topics = extractTrendingTopics(trendingSource, 6);
+  } else if (!query) {
+    topics = extractTrendingTopics(search.posts, 6);
+  }
+  const response = {
+    ok: true,
+    posts: search.posts,
+    cursor: search.cursor,
+    hasMore: search.hasMore,
+    topics
+  };
+  return new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+__name(handleSearchPosts, "handleSearchPosts");
+async function handleProfile(request, env, url) {
+  if (request.method !== "GET") {
+    return new Response(JSON.stringify({ error: "method not allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json", Allow: "GET" }
+    });
+  }
+  const match = url.pathname.match(/^\/profiles\/([^/]+)$/);
+  if (!match) {
+    throw new ApiError(404, { error: "not found" });
+  }
+  const profileUserId = decodeURIComponent(match[1]);
+  const user = await getUserById(env, profileUserId);
+  if (!user) {
+    throw new ApiError(404, { error: "user not found" });
+  }
+  let viewerId = null;
+  const token = parseBearerToken(request);
+  if (token) {
+    const session = await getSessionByToken(env, token);
+    if (session && session.expires_at >= Date.now()) {
+      viewerId = session.user_id;
+    }
+  }
+  const [posts, aliases, counts] = await Promise.all([
+    listUserPosts(env, profileUserId, 15),
+    listAliasesForUser(env, profileUserId, 30),
+    getFollowCounts(env, profileUserId)
+  ]);
+  const influence = calculateInfluenceScore(posts);
+  const followingIds = await listFollowingIds(env, profileUserId, 100);
+  const viewerFollows = viewerId ? await isFollowing(env, viewerId, profileUserId) : false;
+  const response = {
+    ok: true,
+    user: {
+      id: user.id,
+      pseudonym: user.pseudonym,
+      createdAt: user.created_at,
+      influence,
+      followerCount: counts.followerCount,
+      followingCount: counts.followingCount
+    },
+    aliases,
+    recentPosts: posts,
+    followingIds,
+    viewerFollows
+  };
+  return new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+__name(handleProfile, "handleProfile");
 async function handleFeed(request, env, url) {
   const match = url.pathname.match(/^\/boards\/([^/]+)\/feed$/);
   const boardId = decodeURIComponent(match[1]);
@@ -2173,6 +2767,20 @@ async function handleFeed(request, env, url) {
   });
 }
 __name(handleFeed, "handleFeed");
+function mapReplyRowToReply(row) {
+  return {
+    id: row.id,
+    postId: row.post_id,
+    boardId: row.board_id,
+    userId: row.user_id,
+    author: row.author,
+    alias: row.board_alias,
+    pseudonym: row.pseudonym,
+    body: row.body,
+    createdAt: row.created_at
+  };
+}
+__name(mapReplyRowToReply, "mapReplyRowToReply");
 function buildBoardSpaces(posts) {
   const base = [
     { id: "home", label: "Home", type: "default" },
@@ -2388,7 +2996,7 @@ var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "jsonError");
 var middleware_miniflare3_json_error_default = jsonError;
 
-// .wrangler/tmp/bundle-3Ic7Ey/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-osqAKI/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default,
   middleware_miniflare3_json_error_default
@@ -2420,7 +3028,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-3Ic7Ey/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-osqAKI/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;
@@ -2523,14 +3131,23 @@ export {
   __resetSchemaForTests,
   applyReaction,
   createPost,
+  createReply,
   createUser,
   middleware_loader_entry_default as default,
   detectDeadZones,
   ensureSchema,
   getBoardAlias,
+  getFollowCounts,
   getOrCreateBoard,
+  isFollowing,
+  listAliasesForUser,
+  listFollowingIds,
+  listFollowingPosts,
   listPosts,
+  listUserPosts,
   persistEvent,
+  searchBoardPosts,
+  setFollowState,
   upsertBoardAlias
 };
 //# sourceMappingURL=index.js.map

@@ -5,10 +5,18 @@ import WorkerEntrypoint, {
   getOrCreateBoard,
   createPost,
   listPosts,
+  listUserPosts,
+  listFollowingPosts,
+  searchBoardPosts,
   createUser,
   upsertBoardAlias,
   applyReaction,
   getBoardAlias,
+  setFollowState,
+  getFollowCounts,
+  isFollowing,
+  listFollowingIds,
+  createReply,
   detectDeadZones,
   __internal
 } from '../index';
@@ -83,6 +91,18 @@ class BoundPrepared {
         reaction_count: 0,
         like_count: 0,
         dislike_count: 0
+      });
+    }
+    if (this.sql.startsWith('INSERT INTO replies')) {
+      const [id, postId, boardId, userId, author, body, createdAt] = this.params;
+      this.db.replies.push({
+        id,
+        post_id: postId,
+        board_id: boardId,
+        user_id: userId,
+        author,
+        body,
+        created_at: createdAt
       });
     }
     if (this.sql.startsWith('INSERT INTO board_events')) {
@@ -253,6 +273,21 @@ class BoundPrepared {
       const key = `${postId}:${userId}`;
       this.db.reactions.delete(key);
     }
+    if (this.sql.startsWith('INSERT INTO follows')) {
+      const [followerId, followingId, createdAt] = this.params;
+      const exists = this.db.follows.some(
+        entry => entry.follower_id === followerId && entry.following_id === followingId
+      );
+      if (!exists) {
+        this.db.follows.push({ follower_id: followerId, following_id: followingId, created_at: createdAt });
+      }
+    }
+    if (this.sql.startsWith('DELETE FROM follows')) {
+      const [followerId, followingId] = this.params;
+      this.db.follows = this.db.follows.filter(
+        entry => !(entry.follower_id === followerId && entry.following_id === followingId)
+      );
+    }
     return { success: true };
   }
 
@@ -267,22 +302,102 @@ class BoundPrepared {
       return { results: board ? [board as T] : [] };
     }
     if (this.sql.includes('FROM posts p')) {
+      const rawLimit = Number(this.params[this.params.length - 1]) || this.db.posts.length;
+      let posts = [...this.db.posts];
+
+      if (this.sql.includes('WHERE p.created_at >= ?1')) {
+        const earliest = this.params[0];
+        const boardFilter = this.params[1];
+        const likeFilter = this.params[2];
+        const cursorCreatedAt = this.params[3];
+        const cursorId = this.params[4];
+        posts = posts.filter(post => post.created_at >= earliest);
+        if (boardFilter) {
+          posts = posts.filter(post => post.board_id === boardFilter);
+        }
+        if (typeof likeFilter === 'string' && likeFilter) {
+          const needle = likeFilter
+            .replace(/%/g, '')
+            .replace(/_/g, '')
+            .replace(/\\/g, '')
+            .toLowerCase();
+          posts = posts.filter(post => post.body.toLowerCase().includes(needle));
+        }
+        posts = posts.filter(
+          post => post.created_at < cursorCreatedAt || (post.created_at === cursorCreatedAt && post.id < cursorId)
+        );
+      } else if (this.sql.includes('IN (SELECT following_id FROM follows')) {
+        const followerId = this.params[0];
+        const cursorCreatedAt = this.params[1];
+        const cursorId = this.params[2];
+        posts = posts.filter(post =>
+          post.user_id && this.db.follows.some(entry => entry.follower_id === followerId && entry.following_id === post.user_id)
+        );
+        posts = posts.filter(
+          post => post.created_at < cursorCreatedAt || (post.created_at === cursorCreatedAt && post.id < cursorId)
+        );
+      } else if (this.sql.includes('WHERE p.user_id = ?')) {
+        const userId = this.params[0];
+        posts = posts.filter(post => post.user_id === userId);
+      } else if (this.sql.includes('WHERE p.board_id = ?1')) {
+        const boardId = this.params[0];
+        posts = posts.filter(post => post.board_id === boardId);
+      }
+
+      posts.sort((a, b) => {
+        if (b.created_at !== a.created_at) {
+          return b.created_at - a.created_at;
+        }
+        return b.id.localeCompare(a.id);
+      });
+
+      const limited = posts.slice(0, rawLimit).map(post => {
+        const alias = post.user_id ? this.db.aliases.get(`${post.board_id}:${post.user_id}`) : undefined;
+        const user = post.user_id ? this.db.users.get(post.user_id) : undefined;
+        const board = this.db.boards.get(post.board_id);
+        const replyCount = this.db.replies.filter(reply => reply.post_id === post.id).length;
+        return {
+          ...post,
+          board_alias: alias?.alias ?? null,
+          pseudonym: user?.pseudonym ?? null,
+          board_name: board?.display_name ?? null,
+          reply_count: replyCount
+        };
+      });
+
+      return { results: limited as T[] };
+    }
+    if (this.sql.includes('FROM replies r')) {
       const boardId = this.params[0];
-      const limit = this.params[1];
-      const posts = this.db.posts
-        .filter(post => post.board_id === boardId)
-        .sort((a, b) => b.created_at - a.created_at)
+      const postId = this.params[1];
+      const cursorCreatedAt = this.params[2];
+      const cursorId = this.params[3];
+      const limit = this.params[4];
+      const replies = this.db.replies
+        .filter(reply => reply.board_id === boardId && reply.post_id === postId)
+        .filter(reply => reply.created_at > cursorCreatedAt || (reply.created_at === cursorCreatedAt && reply.id > cursorId))
+        .sort((a, b) => (a.created_at - b.created_at) || a.id.localeCompare(b.id))
         .slice(0, limit)
-        .map(post => {
-          const alias = this.db.aliases.get(`${boardId}:${post.user_id}`);
-          const user = post.user_id ? this.db.users.get(post.user_id) : undefined;
+        .map(reply => {
+          const alias = this.db.aliases.get(`${boardId}:${reply.user_id}`);
+          const user = reply.user_id ? this.db.users.get(reply.user_id) : undefined;
           return {
-            ...post,
+            ...reply,
             board_alias: alias?.alias ?? null,
             pseudonym: user?.pseudonym ?? null
           };
         });
-      return { results: posts as T[] };
+      return { results: replies as T[] };
+    }
+    if (this.sql.startsWith('SELECT following_id FROM follows')) {
+      const followerId = this.params[0];
+      const limit = this.params[1];
+      const rows = this.db.follows
+        .filter(entry => entry.follower_id === followerId)
+        .sort((a, b) => b.created_at - a.created_at)
+        .slice(0, limit)
+        .map(entry => ({ following_id: entry.following_id }));
+      return { results: rows as T[] };
     }
     return { results: [] as T[] };
   }
@@ -330,6 +445,11 @@ class BoundPrepared {
       const post = this.db.posts.find(entry => entry.id === this.params[0]);
       return post ? ({ id: post.id, board_id: post.board_id } as T) : undefined;
     }
+    if (this.sql.startsWith('SELECT 1 FROM posts WHERE id')) {
+      const [postId, boardId] = this.params;
+      const exists = this.db.posts.some(entry => entry.id === postId && entry.board_id === boardId);
+      return exists ? (1 as unknown as T) : undefined;
+    }
     if (this.sql.includes("SUM(CASE WHEN reaction =")) {
       const postId = this.params[0];
       let likeCount = 0;
@@ -352,6 +472,24 @@ class BoundPrepared {
       const link = Array.from(this.db.accessLinks.values()).find(entry => entry.user_id === userId);
       return link ? (link as T) : undefined;
     }
+    if (this.sql.startsWith('SELECT COUNT(*) AS follower_count FROM follows')) {
+      const targetId = this.params[0];
+      const count = this.db.follows.filter(entry => entry.following_id === targetId).length;
+      return { follower_count: count } as T;
+    }
+    if (this.sql.startsWith('SELECT COUNT(*) AS following_count FROM follows')) {
+      const sourceId = this.params[0];
+      const count = this.db.follows.filter(entry => entry.follower_id === sourceId).length;
+      return { following_count: count } as T;
+    }
+    if (this.sql.startsWith('SELECT 1 FROM follows WHERE follower_id')) {
+      const followerId = this.params[0];
+      const followingId = this.params[1];
+      const exists = this.db.follows.some(
+        entry => entry.follower_id === followerId && entry.following_id === followingId
+      );
+      return exists ? (1 as unknown as T) : undefined;
+    }
     return undefined;
   }
 }
@@ -361,11 +499,13 @@ class MockD1 {
   prepareCalls: PreparedCall[] = [];
   boards = new Map<string, any>();
   posts: any[] = [];
+  replies: any[] = [];
   events: any[] = [];
   users = new Map<string, any>();
   aliases = new Map<string, any>();
   aliasLookup = new Map<string, string>();
   reactions = new Map<string, any>();
+  follows: Array<{ follower_id: string; following_id: string; created_at: number }> = [];
   accessLinks = new Map<string, { access_subject: string; user_id: string; email: string | null }>();
   deadZoneAlerts: any[] = [];
   accessIdentityEvents: any[] = [];
@@ -475,6 +615,131 @@ describe('storage helpers', () => {
 
     const cleared = await applyReaction(env, board.id, post.id, user.id, 'remove');
     expect(cleared.total).toBe(0);
+  });
+
+  it('lists user posts with reply counts and board metadata', async () => {
+    const board = await getOrCreateBoard(env, 'story-board');
+    const author = await createUser(env, 'Storyteller', 'storyteller');
+    const alias = await upsertBoardAlias(env, board.id, author.id, 'Narrator', 'narrator');
+
+    const post = await createPost(
+      env,
+      board.id,
+      'Meetup tonight #events',
+      alias.alias,
+      author.id,
+      alias.alias,
+      author.pseudonym,
+      undefined,
+      board.display_name
+    );
+
+    const authorRecord = env.BOARD_DB.users.get(author.id);
+    expect(authorRecord).toBeDefined();
+    await createReply(env, {
+      board,
+      postId: post.id,
+      body: 'Count me in!',
+      author: alias.alias,
+      user: authorRecord!,
+      alias: alias.alias
+    });
+
+    const posts = await listUserPosts(env, author.id, 5);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].boardName).toBe(board.display_name);
+    expect(posts[0].replyCount).toBe(1);
+    expect(posts[0].alias).toBe('Narrator');
+  });
+
+  it('provides following feed with pagination and follow counts', async () => {
+    const board = await getOrCreateBoard(env, 'follow-board');
+    const alice = await createUser(env, 'Alice', 'alice');
+    const bob = await createUser(env, 'Bob', 'bob');
+    const carol = await createUser(env, 'Carol', 'carol');
+
+    await upsertBoardAlias(env, board.id, bob.id, 'ChefBob', 'chefbob');
+    await upsertBoardAlias(env, board.id, carol.id, 'CoachCarol', 'coachcarol');
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2024-03-01T10:00:00Z'));
+      await createPost(env, board.id, 'Lunch specials', 'ChefBob', bob.id, 'ChefBob', 'Bob', undefined, board.display_name);
+      vi.advanceTimersByTime(1000);
+      await createPost(env, board.id, 'Morning workout', 'CoachCarol', carol.id, 'CoachCarol', 'Carol', undefined, board.display_name);
+      vi.advanceTimersByTime(1000);
+      await createPost(env, board.id, 'Dinner ideas', 'ChefBob', bob.id, 'ChefBob', 'Bob', undefined, board.display_name);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await setFollowState(env, alice.id, bob.id, true);
+    expect(await isFollowing(env, alice.id, bob.id)).toBe(true);
+    expect(await isFollowing(env, alice.id, carol.id)).toBe(false);
+
+    const counts = await getFollowCounts(env, bob.id);
+    expect(counts.followerCount).toBe(1);
+
+    const ids = await listFollowingIds(env, alice.id, 10);
+    expect(ids).toEqual([bob.id]);
+
+    const page1 = await listFollowingPosts(env, alice.id, { limit: 1 });
+    expect(page1.posts).toHaveLength(1);
+    expect(page1.hasMore).toBe(true);
+    expect(page1.posts[0].userId).toBe(bob.id);
+    expect(page1.posts[0].boardName).toBe(board.display_name);
+
+    const page2 = await listFollowingPosts(env, alice.id, { limit: 1, cursor: page1.cursor });
+    expect(page2.posts).toHaveLength(1);
+    expect(page2.hasMore).toBe(false);
+
+    await setFollowState(env, alice.id, bob.id, false);
+    expect(await isFollowing(env, alice.id, bob.id)).toBe(false);
+    const clearedIds = await listFollowingIds(env, alice.id, 10);
+    expect(clearedIds).toEqual([]);
+  });
+
+  it('searches board posts by query and recency', async () => {
+    const board = await getOrCreateBoard(env, 'search-board');
+    const author = await createUser(env, 'Searcher', 'searcher');
+    await upsertBoardAlias(env, board.id, author.id, 'Scout', 'scout');
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-04-01T09:00:00Z'));
+    await createPost(
+      env,
+      board.id,
+      'Morning bulletin #coffee',
+      'Scout',
+      author.id,
+      'Scout',
+      author.pseudonym,
+      undefined,
+      board.display_name
+    );
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    await createPost(
+      env,
+      board.id,
+      'Campus update without tag',
+      'Scout',
+      author.id,
+      'Scout',
+      author.pseudonym,
+      undefined,
+      board.display_name
+    );
+    const results = await searchBoardPosts(env, {
+      boardId: board.id,
+      query: '#coffee',
+      limit: 5,
+      windowMs: 24 * 60 * 60 * 1000
+    });
+
+    expect(results.posts).toHaveLength(1);
+    expect(results.posts[0].body).toContain('#coffee');
+    expect(results.hasMore).toBe(false);
+    vi.useRealTimers();
   });
 
   it('auto provisions access users and allows explicit relinking', async () => {

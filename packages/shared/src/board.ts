@@ -22,6 +22,7 @@ export interface PostImageDraft {
 export interface BoardPost {
   id: string;
   boardId: string;
+  boardName?: string | null;
   userId: string | null;
   author: string | null;
   alias: string | null;
@@ -31,6 +32,7 @@ export interface BoardPost {
   reactionCount: number;
   likeCount: number;
   dislikeCount: number;
+  replyCount?: number;
   hotRank?: number;
   images?: string[];
 }
@@ -68,6 +70,80 @@ export interface BoardSpace {
     description?: string;
     [key: string]: unknown;
   };
+}
+
+export interface BoardReply {
+  id: string;
+  postId: string;
+  boardId: string;
+  userId: string | null;
+  author: string | null;
+  alias: string | null;
+  pseudonym: string | null;
+  body: string;
+  createdAt: number;
+}
+
+export interface ListRepliesResponse {
+  ok: boolean;
+  postId: string;
+  replies: BoardReply[];
+  cursor?: string | null;
+  hasMore: boolean;
+}
+
+export interface CreateReplyRequest {
+  body: string;
+  userId?: string;
+  author?: string;
+}
+
+export interface CreateReplyResponse {
+  ok: boolean;
+  reply: BoardReply;
+}
+
+export interface FollowingFeedResponse {
+  ok: boolean;
+  posts: BoardPost[];
+  cursor?: string | null;
+  hasMore: boolean;
+}
+
+export interface FollowRequest {
+  action: 'follow' | 'unfollow';
+  targetUserId: string;
+}
+
+export interface FollowResponse {
+  ok: boolean;
+  following: boolean;
+  followerCount?: number;
+  followingCount?: number;
+}
+
+export interface ProfileSummary {
+  ok: boolean;
+  user: {
+    id: string;
+    pseudonym: string;
+    createdAt: number;
+    influence: number;
+    followerCount: number;
+    followingCount: number;
+  };
+  aliases: BoardAlias[];
+  recentPosts: BoardPost[];
+  viewerFollows?: boolean;
+  followingIds?: string[];
+}
+
+export interface SearchPostsResponse {
+  ok: boolean;
+  posts: BoardPost[];
+  topics?: string[];
+  cursor?: string | null;
+  hasMore: boolean;
 }
 
 export interface CreatePostRequest {

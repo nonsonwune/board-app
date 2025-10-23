@@ -6,6 +6,15 @@ import type {
   BoardPost as SharedBoardPost,
   BoardSummary,
   BoardSpace,
+  BoardReply,
+  ListRepliesResponse,
+  CreateReplyRequest,
+  CreateReplyResponse,
+  FollowingFeedResponse,
+  FollowRequest,
+  FollowResponse,
+  ProfileSummary,
+  SearchPostsResponse,
   CreatePostRequest,
   CreatePostResponse,
   RegisterIdentityRequest,
@@ -569,7 +578,8 @@ async function createPost(
   userId?: string | null,
   alias?: string | null,
   pseudonym?: string | null,
-  images?: string[]
+  images?: string[],
+  boardName?: string | null
 ): Promise<SharedBoardPost> {
   await ensureSchema(env);
   const id = crypto.randomUUID();
@@ -586,6 +596,7 @@ async function createPost(
   return {
     id,
     boardId,
+    boardName: boardName ?? null,
     userId: userId ?? null,
     author: author ?? null,
     alias: alias ?? author ?? null,
@@ -595,9 +606,104 @@ async function createPost(
     reactionCount: 0,
     likeCount: 0,
     dislikeCount: 0,
+    replyCount: 0,
     hotRank,
     images: images && images.length > 0 ? images : undefined
   };
+}
+
+async function createReply(
+  env: Env,
+  options: {
+    board: BoardRecord;
+    postId: string;
+    body: string;
+    author: string | null;
+    user: UserRecord | null;
+    alias: string | null;
+  }
+): Promise<BoardReply> {
+  await ensureSchema(env);
+  const exists = await env.BOARD_DB.prepare(
+    'SELECT 1 FROM posts WHERE id = ?1 AND board_id = ?2'
+  )
+    .bind(options.postId, options.board.id)
+    .first<number>();
+  if (!exists) {
+    throw new ApiError(404, { error: 'post not found' });
+  }
+
+  const id = crypto.randomUUID();
+  const createdAt = Date.now();
+  await env.BOARD_DB.prepare(
+    'INSERT INTO replies (id, post_id, board_id, user_id, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
+  )
+    .bind(id, options.postId, options.board.id, options.user?.id ?? null, options.author, options.body, createdAt)
+    .run();
+
+  return {
+    id,
+    postId: options.postId,
+    boardId: options.board.id,
+    userId: options.user?.id ?? null,
+    author: options.author,
+    alias: options.alias,
+    pseudonym: options.user?.pseudonym ?? null,
+    body: options.body,
+    createdAt
+  };
+}
+
+async function listReplies(
+  env: Env,
+  boardId: string,
+  postId: string,
+  options: { limit?: number; cursor?: string | null }
+) {
+  await ensureSchema(env);
+  const limit = options.limit ?? 50;
+  let cursorCreatedAt = 0;
+  let cursorId = '';
+  if (options.cursor) {
+    const [timestamp, id] = options.cursor.split(':');
+    cursorCreatedAt = Number(timestamp) || 0;
+    cursorId = id ?? '';
+  }
+
+  const rows = await env.BOARD_DB.prepare(
+    `SELECT
+        r.id,
+        r.post_id,
+        r.board_id,
+        r.user_id,
+        r.author,
+        r.body,
+        r.created_at,
+        a.alias AS board_alias,
+        u.pseudonym AS pseudonym
+       FROM replies r
+       LEFT JOIN board_aliases a ON a.board_id = r.board_id AND a.user_id = r.user_id
+       LEFT JOIN users u ON u.id = r.user_id
+      WHERE r.board_id = ?1
+        AND r.post_id = ?2
+        AND (
+          r.created_at > ?3
+          OR (r.created_at = ?3 AND r.id > ?4)
+        )
+      ORDER BY r.created_at ASC, r.id ASC
+      LIMIT ?5`
+  )
+    .bind(boardId, postId, cursorCreatedAt, cursorId, limit)
+    .all<ReplyRow>();
+
+  const replies = rows.results?.map(mapReplyRowToReply) ?? [];
+  let nextCursor: string | null = null;
+  if (rows.results && rows.results.length === limit) {
+    const last = rows.results[rows.results.length - 1];
+    nextCursor = `${last.created_at}:${last.id}`;
+  }
+
+  return { replies, cursor: nextCursor };
 }
 
 async function listPosts(
@@ -619,6 +725,8 @@ async function listPosts(
         p.reaction_count,
         p.like_count,
         p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
         ba.alias AS board_alias,
         u.pseudonym
        FROM posts p
@@ -627,6 +735,14 @@ async function listPosts(
         AND ba.user_id = p.user_id
        LEFT JOIN users u
          ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
        WHERE p.board_id = ?1
        ORDER BY p.created_at DESC
        LIMIT ?2`
@@ -635,29 +751,7 @@ async function listPosts(
     .all<PostListRow>();
 
   return (results ?? [])
-    .map(row => {
-      const hotRank = calculateHotRank(
-        row.like_count,
-        row.dislike_count,
-        row.reaction_count,
-        row.created_at,
-        now
-      );
-      return {
-        id: row.id,
-        boardId: row.board_id,
-        userId: row.user_id ?? null,
-        author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
-        alias: row.board_alias ?? row.author ?? null,
-        pseudonym: row.pseudonym ?? null,
-        body: row.body,
-        createdAt: row.created_at,
-        reactionCount: row.reaction_count,
-        likeCount: row.like_count,
-        dislikeCount: row.dislike_count,
-        hotRank
-      } as SharedBoardPost;
-    })
+    .map(row => mapPostRowToBoardPost(row, now))
     .sort((a, b) => {
       const rankDelta = (b.hotRank ?? 0) - (a.hotRank ?? 0);
       if (Math.abs(rankDelta) > 1e-6) {
@@ -665,6 +759,330 @@ async function listPosts(
       }
       return b.createdAt - a.createdAt;
     });
+}
+
+function mapPostRowToBoardPost(row: PostListRow, now: number): SharedBoardPost {
+  const likeCount = row.like_count ?? 0;
+  const dislikeCount = row.dislike_count ?? 0;
+  const reactionCount = row.reaction_count ?? likeCount + dislikeCount;
+  const replyCount = row.reply_count ?? 0;
+  const hotRank = calculateHotRank(likeCount, dislikeCount, reactionCount, row.created_at, now);
+
+  return {
+    id: row.id,
+    boardId: row.board_id,
+    boardName: row.board_name ?? null,
+    userId: row.user_id ?? null,
+    author: row.board_alias ?? row.author ?? row.pseudonym ?? null,
+    alias: row.board_alias ?? row.author ?? null,
+    pseudonym: row.pseudonym ?? null,
+    body: row.body,
+    createdAt: row.created_at,
+    reactionCount,
+    likeCount,
+    dislikeCount,
+    replyCount,
+    hotRank
+  };
+}
+
+function parsePostCursor(cursor: string | null | undefined) {
+  if (!cursor) {
+    return null;
+  }
+  const [timestamp, id] = cursor.split(':');
+  const createdAt = Number(timestamp);
+  if (!Number.isFinite(createdAt) || !id) {
+    return null;
+  }
+  return { createdAt, id };
+}
+
+function extractTrendingTopics(posts: SharedBoardPost[], limit = 5): string[] {
+  const hashtagRegex = /#[\p{L}0-9_-]+/gu;
+  const counts = new Map<string, { count: number; label: string }>();
+
+  for (const post of posts) {
+    const matches = post.body.match(hashtagRegex);
+    if (!matches) continue;
+    for (const rawTag of matches) {
+      const normalized = rawTag.toLowerCase();
+      const entry = counts.get(normalized);
+      if (entry) {
+        entry.count += 1;
+      } else {
+        counts.set(normalized, { count: 1, label: rawTag });
+      }
+    }
+  }
+
+  return Array.from(counts.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit)
+    .map(entry => entry.label);
+}
+
+function calculateInfluenceScore(posts: SharedBoardPost[]): number {
+  if (!posts.length) {
+    return 0;
+  }
+
+  let positive = 0;
+  let negative = 0;
+
+  for (const post of posts) {
+    positive += post.likeCount ?? 0;
+    positive += (post.replyCount ?? 0) * 0.5;
+    negative += (post.dislikeCount ?? 0) * 0.7;
+  }
+
+  const raw = positive - negative;
+  const normalized = Math.max(0, Math.min(1, raw / (posts.length * 12 + 12)));
+  return Number(normalized.toFixed(2));
+}
+
+async function listUserPosts(
+  env: Env,
+  userId: string,
+  limit: number,
+  options: { now?: number } = {}
+): Promise<SharedBoardPost[]> {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const cappedLimit = Math.max(1, Math.min(limit, 50));
+  const { results } = await env.BOARD_DB.prepare(
+    `SELECT
+        p.id,
+        p.board_id,
+        p.user_id,
+        p.author,
+        p.body,
+        p.created_at,
+        p.reaction_count,
+        p.like_count,
+        p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
+        ba.alias AS board_alias,
+        u.pseudonym
+       FROM posts p
+       LEFT JOIN board_aliases ba
+         ON ba.board_id = p.board_id
+        AND ba.user_id = p.user_id
+       LEFT JOIN users u
+         ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
+      WHERE p.user_id = ?
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ?`
+  )
+    .bind(userId, cappedLimit)
+    .all<PostListRow>();
+
+  return (results ?? []).map(row => mapPostRowToBoardPost(row, now));
+}
+
+async function listFollowingPosts(
+  env: Env,
+  followerId: string,
+  options: { limit?: number; cursor?: string | null; now?: number } = {}
+): Promise<{ posts: SharedBoardPost[]; cursor: string | null; hasMore: boolean }> {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
+  const cursor = parsePostCursor(options.cursor);
+  const cursorCreatedAt = cursor?.createdAt ?? Number.MAX_SAFE_INTEGER;
+  const cursorId = cursor?.id ?? '\uffff';
+
+  const sql = `SELECT
+        p.id,
+        p.board_id,
+        p.user_id,
+        p.author,
+        p.body,
+        p.created_at,
+        p.reaction_count,
+        p.like_count,
+        p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
+        ba.alias AS board_alias,
+       u.pseudonym
+       FROM posts p
+       LEFT JOIN board_aliases ba
+         ON ba.board_id = p.board_id
+        AND ba.user_id = p.user_id
+       LEFT JOIN users u
+         ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
+      WHERE p.user_id IS NOT NULL
+        AND p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?1)
+        AND (p.created_at < ?2 OR (p.created_at = ?2 AND p.id < ?3))
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ?4`;
+
+  const { results } = await env.BOARD_DB.prepare(sql)
+    .bind(followerId, cursorCreatedAt, cursorId, limit + 1)
+    .all<PostListRow>();
+  const rows = results ?? [];
+  const posts = rows.slice(0, limit).map(row => mapPostRowToBoardPost(row, now));
+  const hasMore = rows.length > limit;
+  const nextCursor = hasMore && rows[limit - 1]
+    ? `${rows[limit - 1].created_at}:${rows[limit - 1].id}`
+    : null;
+
+  return { posts, cursor: nextCursor, hasMore };
+}
+
+async function searchBoardPosts(
+  env: Env,
+  options: {
+    boardId?: string | null;
+    query?: string | null;
+    limit?: number;
+    cursor?: string | null;
+    windowMs?: number;
+    minReactions?: number;
+    now?: number;
+  } = {}
+): Promise<{ posts: SharedBoardPost[]; cursor: string | null; hasMore: boolean }> {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
+  const cursor = parsePostCursor(options.cursor);
+  const windowMs = options.windowMs ?? 7 * 24 * 60 * 60 * 1000;
+  const minReactions = options.minReactions ?? 10;
+  const extendedWindowMs = Math.max(windowMs, 30 * 24 * 60 * 60 * 1000);
+  const earliest = now - extendedWindowMs;
+  const boardParam = options.boardId ?? null;
+  const likeParam = options.query?.trim()
+    ? `%${options.query.trim().replace(/[%_]/g, match => `\\${match}`)}%`
+    : null;
+  const cursorCreatedAt = cursor?.createdAt ?? Number.MAX_SAFE_INTEGER;
+  const cursorId = cursor?.id ?? '\uffff';
+
+  const sql = `SELECT
+        p.id,
+        p.board_id,
+        p.user_id,
+        p.author,
+        p.body,
+        p.created_at,
+        p.reaction_count,
+        p.like_count,
+        p.dislike_count,
+        COALESCE(r.reply_count, 0) AS reply_count,
+        b.display_name AS board_name,
+        ba.alias AS board_alias,
+       u.pseudonym
+       FROM posts p
+       LEFT JOIN board_aliases ba
+         ON ba.board_id = p.board_id
+        AND ba.user_id = p.user_id
+       LEFT JOIN users u
+         ON u.id = p.user_id
+       LEFT JOIN boards b
+         ON b.id = p.board_id
+       LEFT JOIN (
+         SELECT post_id, COUNT(*) AS reply_count
+           FROM replies
+          GROUP BY post_id
+       ) r
+         ON r.post_id = p.id
+      WHERE p.created_at >= ?1
+        AND (?2 IS NULL OR p.board_id = ?2)
+        AND (?3 IS NULL OR p.body LIKE ?3)
+        AND (p.created_at < ?4 OR (p.created_at = ?4 AND p.id < ?5))
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ?6`;
+
+  const { results } = await env.BOARD_DB.prepare(sql)
+    .bind(earliest, boardParam, likeParam, cursorCreatedAt, cursorId, limit + 1)
+    .all<PostListRow>();
+  const rows = results ?? [];
+  const filtered = rows
+    .filter(row => row.created_at >= now - windowMs || (row.reaction_count ?? 0) >= minReactions)
+    .slice(0, limit);
+
+  const posts = filtered.map(row => mapPostRowToBoardPost(row, now));
+  const hasMore = rows.length > limit;
+  let anchor: PostListRow | undefined;
+  if (hasMore) {
+    anchor = rows[limit - 1];
+  } else if (filtered.length > 0) {
+    anchor = filtered[filtered.length - 1];
+  }
+  const nextCursor = hasMore && anchor ? `${anchor.created_at}:${anchor.id}` : null;
+
+  return { posts, cursor: nextCursor, hasMore };
+}
+
+async function getFollowCounts(env: Env, userId: string): Promise<{ followerCount: number; followingCount: number }> {
+  await ensureSchema(env);
+  const followerRow = await env.BOARD_DB.prepare('SELECT COUNT(*) AS follower_count FROM follows WHERE following_id = ?')
+    .bind(userId)
+    .first<{ follower_count: number | null }>();
+  const followingRow = await env.BOARD_DB.prepare('SELECT COUNT(*) AS following_count FROM follows WHERE follower_id = ?')
+    .bind(userId)
+    .first<{ following_count: number | null }>();
+
+  return {
+    followerCount: followerRow?.follower_count ?? 0,
+    followingCount: followingRow?.following_count ?? 0
+  };
+}
+
+async function isFollowing(env: Env, followerId: string, targetId: string): Promise<boolean> {
+  await ensureSchema(env);
+  const existing = await env.BOARD_DB.prepare(
+    'SELECT 1 FROM follows WHERE follower_id = ?1 AND following_id = ?2 LIMIT 1'
+  )
+    .bind(followerId, targetId)
+    .first<number>();
+  return Boolean(existing);
+}
+
+async function listFollowingIds(env: Env, userId: string, limit = 50): Promise<string[]> {
+  await ensureSchema(env);
+  const { results } = await env.BOARD_DB.prepare(
+    'SELECT following_id FROM follows WHERE follower_id = ? ORDER BY created_at DESC LIMIT ?'
+  )
+    .bind(userId, Math.max(1, Math.min(limit, 200)))
+    .all<{ following_id: string }>();
+  return (results ?? []).map(row => row.following_id);
+}
+
+async function setFollowState(env: Env, followerId: string, targetId: string, follow: boolean): Promise<boolean> {
+  await ensureSchema(env);
+  if (follow) {
+    await env.BOARD_DB.prepare(
+      `INSERT INTO follows (follower_id, following_id, created_at)
+         VALUES (?1, ?2, ?3)
+       ON CONFLICT(follower_id, following_id) DO NOTHING`
+    )
+      .bind(followerId, targetId, Date.now())
+      .run();
+    return true;
+  }
+
+  await env.BOARD_DB.prepare('DELETE FROM follows WHERE follower_id = ?1 AND following_id = ?2')
+    .bind(followerId, targetId)
+    .run();
+  return false;
 }
 
 async function issueSessionTicket(env: Env, userId: string): Promise<SessionTicket> {
@@ -1041,6 +1459,24 @@ async function getBoardAlias(env: Env, boardId: string, userId: string): Promise
     aliasNormalized: record.alias_normalized,
     createdAt: record.created_at
   };
+}
+
+async function listAliasesForUser(env: Env, userId: string, limit = 100): Promise<BoardAlias[]> {
+  await ensureSchema(env);
+  const { results } = await env.BOARD_DB.prepare(
+    'SELECT id, board_id, user_id, alias, alias_normalized, created_at FROM board_aliases WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
+  )
+    .bind(userId, Math.max(1, Math.min(limit, 200)))
+    .all<BoardAliasRecord>();
+
+  return (results ?? []).map(record => ({
+    id: record.id,
+    boardId: record.board_id,
+    userId: record.user_id,
+    alias: record.alias,
+    aliasNormalized: record.alias_normalized,
+    createdAt: record.created_at
+  }));
 }
 
 async function applyReaction(
@@ -1425,8 +1861,28 @@ export default {
         return withCors(request, await handleUpdateReaction(request, env, ctx, url));
       }
 
+      if (url.pathname.match(/^\/boards\/[^/]+\/posts\/[^/]+\/replies$/)) {
+        return withCors(request, await handleReplies(request, env, ctx, url));
+      }
+
       if (url.pathname.match(/^\/boards\/[^/]+\/feed$/)) {
         return withCors(request, await handleFeed(request, env, url));
+      }
+
+      if (url.pathname === '/follow') {
+        return withCors(request, await handleFollow(request, env));
+      }
+
+      if (url.pathname === '/following/feed') {
+        return withCors(request, await handleFollowingFeed(request, env, url));
+      }
+
+      if (url.pathname === '/search/posts') {
+        return withCors(request, await handleSearchPosts(request, env, url));
+      }
+
+      if (url.pathname.match(/^\/profiles\/[^/]+$/)) {
+        return withCors(request, await handleProfile(request, env, url));
       }
 
       if (url.pathname === '/metrics/dead-zones') {
@@ -1503,11 +1959,20 @@ export {
   getOrCreateBoard,
   createPost,
   listPosts,
+  listUserPosts,
+  listFollowingPosts,
+  searchBoardPosts,
   persistEvent,
   createUser,
   upsertBoardAlias,
   applyReaction,
   getBoardAlias,
+  listAliasesForUser,
+  createReply,
+  setFollowState,
+  getFollowCounts,
+  isFollowing,
+  listFollowingIds,
   detectDeadZones,
   __internal
 };
@@ -1822,7 +2287,8 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
     userId,
     aliasRecord?.alias ?? null,
     user?.pseudonym ?? null,
-    imageRefs
+    imageRefs,
+    board.display_name ?? null
   );
   const postWithImages = imageRefs && imageRefs.length > 0 ? { ...post, images: imageRefs } : post;
 
@@ -1851,6 +2317,99 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
 
   const responseBody: CreatePostResponse = { ok: true, post: postWithImages };
   return new Response(JSON.stringify(responseBody), {
+    status: 201,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function handleReplies(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
+  const match = url.pathname.match(/^\/boards\/([^/]+)\/posts\/([^/]+)\/replies$/);
+  if (!match) {
+    throw new ApiError(404, { error: 'not found' });
+  }
+  const boardId = decodeURIComponent(match[1]);
+  const postId = decodeURIComponent(match[2]);
+
+  if (request.method === 'GET') {
+    const urlCursor = url.searchParams.get('cursor') ?? null;
+    const limitParam = Number(url.searchParams.get('limit') ?? '50');
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 50;
+    const { replies, cursor } = await listReplies(env, boardId, postId, { limit, cursor: urlCursor });
+    const response: ListRepliesResponse = {
+      ok: true,
+      postId,
+      replies,
+      cursor,
+      hasMore: Boolean(cursor)
+    };
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  const traceId = request.headers.get('cf-ray') ?? crypto.randomUUID();
+  let payload: CreateReplyRequest;
+  try {
+    payload = (await request.json()) as CreateReplyRequest;
+  } catch {
+    throw new ApiError(400, { error: 'invalid JSON payload', trace_id: traceId });
+  }
+
+  const body = payload.body?.trim();
+  if (!body) {
+    throw new ApiError(400, { error: 'reply body required', trace_id: traceId });
+  }
+  if (body.length > 300) {
+    throw new ApiError(400, { error: 'reply body must be 300 characters or fewer', trace_id: traceId });
+  }
+
+  const userId = payload.userId?.trim() || null;
+  const authorInput = payload.author?.trim()?.slice(0, 64) ?? null;
+
+  let author = authorInput;
+  let user: UserRecord | null = null;
+  let aliasRecord: BoardAlias | null = null;
+  if (userId) {
+    await ensureSession(request, env, userId);
+    user = await getUserById(env, userId);
+    if (!user) {
+      throw new ApiError(404, { error: 'user not found', trace_id: traceId });
+    }
+    aliasRecord = await getBoardAlias(env, boardId, userId);
+    author = aliasRecord?.alias ?? author ?? user.pseudonym;
+  }
+
+  const board = await getOrCreateBoard(env, boardId);
+  const reply = await createReply(env, {
+    board,
+    postId,
+    body,
+    author,
+    user,
+    alias: aliasRecord?.alias ?? null
+  });
+
+  ctx.waitUntil(
+    persistEvent(env, {
+      id: crypto.randomUUID(),
+      boardId,
+      event: 'reply.created',
+      data: reply,
+      traceId,
+      timestamp: Date.now()
+    }, boardId)
+  );
+
+  const response: CreateReplyResponse = { ok: true, reply };
+  return new Response(JSON.stringify(response), {
     status: 201,
     headers: { 'Content-Type': 'application/json' }
   });
@@ -2339,6 +2898,189 @@ async function handleUpdateReaction(
   }
 }
 
+async function handleFollow(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'POST' }
+    });
+  }
+
+  const session = await getSessionFromRequest(request, env);
+  const followerId = session.user_id;
+
+  let payload: FollowRequest;
+  try {
+    payload = (await request.json()) as FollowRequest;
+  } catch {
+    throw new ApiError(400, { error: 'invalid JSON body' });
+  }
+
+  const targetUserId = payload?.targetUserId?.trim();
+  if (!targetUserId) {
+    throw new ApiError(400, { error: 'targetUserId is required' });
+  }
+
+  if (targetUserId === followerId) {
+    throw new ApiError(400, { error: 'cannot follow yourself' });
+  }
+
+  const target = await getUserById(env, targetUserId);
+  if (!target) {
+    throw new ApiError(404, { error: 'target user not found' });
+  }
+
+  const follow = payload.action !== 'unfollow';
+  const following = await setFollowState(env, followerId, targetUserId, follow);
+  const targetCounts = await getFollowCounts(env, targetUserId);
+  const viewerCounts = followerId === targetUserId ? targetCounts : await getFollowCounts(env, followerId);
+
+  const body: FollowResponse = {
+    ok: true,
+    following,
+    followerCount: targetCounts.followerCount,
+    followingCount: viewerCounts.followingCount
+  };
+
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function handleFollowingFeed(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== 'GET') {
+    return new Response(JSON.stringify({ error: 'method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'GET' }
+    });
+  }
+
+  const session = await getSessionFromRequest(request, env);
+  const limitParam = Number(url.searchParams.get('limit') ?? '20');
+  const limit = Number.isFinite(limitParam) ? limitParam : 20;
+  const cursor = url.searchParams.get('cursor');
+
+  const feed = await listFollowingPosts(env, session.user_id, { limit, cursor });
+  const response: FollowingFeedResponse = {
+    ok: true,
+    posts: feed.posts,
+    cursor: feed.cursor,
+    hasMore: feed.hasMore
+  };
+
+  return new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function handleSearchPosts(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== 'GET') {
+    return new Response(JSON.stringify({ error: 'method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'GET' }
+    });
+  }
+
+  const boardId = url.searchParams.get('boardId');
+  const query = url.searchParams.get('q');
+  const limitParam = Number(url.searchParams.get('limit') ?? '20');
+  const limit = Number.isFinite(limitParam) ? limitParam : 20;
+  const cursor = url.searchParams.get('cursor');
+  const windowParam = Number(url.searchParams.get('windowMs') ?? '0');
+  const windowMs = Number.isFinite(windowParam) && windowParam > 0 ? windowParam : undefined;
+
+  const search = await searchBoardPosts(env, {
+    boardId,
+    query,
+    limit,
+    cursor,
+    windowMs
+  });
+
+  let topics: string[] = [];
+  if (boardId) {
+    const trendingSource = await listPosts(env, boardId, 40);
+    topics = extractTrendingTopics(trendingSource, 6);
+  } else if (!query) {
+    topics = extractTrendingTopics(search.posts, 6);
+  }
+
+  const response: SearchPostsResponse = {
+    ok: true,
+    posts: search.posts,
+    cursor: search.cursor,
+    hasMore: search.hasMore,
+    topics
+  };
+
+  return new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function handleProfile(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== 'GET') {
+    return new Response(JSON.stringify({ error: 'method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'GET' }
+    });
+  }
+
+  const match = url.pathname.match(/^\/profiles\/([^/]+)$/);
+  if (!match) {
+    throw new ApiError(404, { error: 'not found' });
+  }
+
+  const profileUserId = decodeURIComponent(match[1]);
+  const user = await getUserById(env, profileUserId);
+  if (!user) {
+    throw new ApiError(404, { error: 'user not found' });
+  }
+
+  let viewerId: string | null = null;
+  const token = parseBearerToken(request);
+  if (token) {
+    const session = await getSessionByToken(env, token);
+    if (session && session.expires_at >= Date.now()) {
+      viewerId = session.user_id;
+    }
+  }
+
+  const [posts, aliases, counts] = await Promise.all([
+    listUserPosts(env, profileUserId, 15),
+    listAliasesForUser(env, profileUserId, 30),
+    getFollowCounts(env, profileUserId)
+  ]);
+
+  const influence = calculateInfluenceScore(posts);
+  const followingIds = await listFollowingIds(env, profileUserId, 100);
+  const viewerFollows = viewerId ? await isFollowing(env, viewerId, profileUserId) : false;
+
+  const response: ProfileSummary = {
+    ok: true,
+    user: {
+      id: user.id,
+      pseudonym: user.pseudonym,
+      createdAt: user.created_at,
+      influence,
+      followerCount: counts.followerCount,
+      followingCount: counts.followingCount
+    },
+    aliases,
+    recentPosts: posts,
+    followingIds,
+    viewerFollows
+  };
+
+  return new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
 async function handleFeed(request: Request, env: Env, url: URL): Promise<Response> {
   const match = url.pathname.match(/^\/boards\/([^/]+)\/feed$/);
   const boardId = decodeURIComponent(match![1]);
@@ -2467,6 +3209,32 @@ type BoardRecord = {
   text_only: number | null;
 };
 
+type ReplyRow = {
+  id: string;
+  post_id: string;
+  board_id: string;
+  user_id: string | null;
+  author: string | null;
+  body: string;
+  created_at: number;
+  board_alias: string | null;
+  pseudonym: string | null;
+};
+
+function mapReplyRowToReply(row: ReplyRow): BoardReply {
+  return {
+    id: row.id,
+    postId: row.post_id,
+    boardId: row.board_id,
+    userId: row.user_id,
+    author: row.author,
+    alias: row.board_alias,
+    pseudonym: row.pseudonym,
+    body: row.body,
+    createdAt: row.created_at
+  };
+}
+
 function buildBoardSpaces(posts: SharedBoardPost[]): BoardSpace[] {
   const base: BoardSpace[] = [
     { id: 'home', label: 'Home', type: 'default' },
@@ -2514,6 +3282,8 @@ type PostRecord = {
   reaction_count: number;
   like_count: number;
   dislike_count: number;
+  reply_count: number | null;
+  board_name: string | null;
 };
 
 type PostListRow = PostRecord & {
