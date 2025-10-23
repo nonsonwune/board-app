@@ -28,5 +28,5 @@ Keep this table in sync with `wrangler.toml` files and deployment workflows.
 
 ## Environment Hints
 - Preview and production share binding names but use separate Cloudflare environments; `wrangler.toml` should declare `environments.preview` with `*_PREVIEW` account IDs if needed.
-- Admin-only secrets (`ADMIN_PASSKEY_APP_ID`, `ACCESS_AUD`) live in `.dev.vars` locally and are provisioned via Wrangler secrets in preview/production.
+- Admin-only secrets (`ADMIN_PASSKEY_APP_ID`, `ACCESS_JWT_AUDIENCE`, `ACCESS_JWT_ISSUER`, `ACCESS_JWT_JWKS_URL`) live in `.dev.vars` locally and are provisioned via Wrangler secrets in preview/production.
 - When adding a new binding, update this file, `wrangler.toml`, and note the change in the PR checklist.

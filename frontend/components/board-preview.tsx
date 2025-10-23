@@ -1,10 +1,13 @@
+
 'use client';
 
 import Link from 'next/link';
+import QuickActions from './quick-actions';
 
 const boards = [
-  { id: 'demo-board', name: 'Demo Board' },
-  { id: 'campus-north', name: 'Campus North' }
+  { id: 'demo-board', name: 'Demo Board', badges: ['demo', 'alias demo'] },
+  { id: 'campus-north', name: 'Campus North', badges: ['campus'] },
+  { id: 'smoke-board', name: 'Smoke Test Board', badges: ['testing'] }
 ];
 
 export default function BoardPreview() {
@@ -19,6 +22,8 @@ export default function BoardPreview() {
           </p>
         </header>
 
+        <QuickActions />
+
         <div className="mt-12 grid gap-6 sm:grid-cols-2">
           {boards.map(board => (
             <Link
@@ -31,6 +36,16 @@ export default function BoardPreview() {
                 {board.name}
               </p>
               <p className="mt-4 text-sm text-slate-400">ws://localhost:8788/boards?boardId={board.id}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {board.badges?.map(badge => (
+                  <span
+                    key={badge}
+                    className="rounded-full border border-slate-800 bg-slate-900/60 px-2 py-0.5 text-[11px] uppercase tracking-[2px] text-slate-400"
+                  >
+                    {badge}
+                  </span>
+                ))}
+              </div>
               <span className="mt-6 inline-flex items-center gap-2 text-sm font-medium text-sky-400">
                 Join live<span aria-hidden>→</span>
               </span>

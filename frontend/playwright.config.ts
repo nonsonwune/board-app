@@ -1,11 +1,20 @@
 import { defineConfig } from '@playwright/test';
 
-const workerBaseUrl = process.env.WORKER_BASE_URL ?? 'http://localhost:8788';
+const appBaseUrl = process.env.APP_BASE_URL ?? 'http://127.0.0.1:3002';
 
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 20_000,
   use: {
-    baseURL: workerBaseUrl
+    baseURL: appBaseUrl,
+    headless: true
+  },
+  webServer: {
+    command: 'PORT=3002 pnpm dev',
+    url: appBaseUrl,
+    reuseExistingServer: false,
+    timeout: 120_000,
+    stdout: 'pipe',
+    stderr: 'pipe'
   }
 });

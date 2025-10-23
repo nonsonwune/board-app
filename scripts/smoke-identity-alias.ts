@@ -25,12 +25,14 @@ async function main() {
 
   const userId = identityRes.user.id as string;
   assert.ok(userId, 'user id missing');
+  const token = identityRes.session?.token as string;
+  assert.ok(token, 'session token missing');
 
   console.info('[smoke] upserting alias');
   const aliasName = `Smoky${Date.now().toString().slice(-4)}`;
   const aliasRes = await request(`/boards/${boardId}/aliases`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ userId, alias: aliasName })
   });
   assert.equal(aliasRes.alias.alias, aliasName);
@@ -38,19 +40,19 @@ async function main() {
   console.info('[smoke] creating post');
   const postRes = await request(`/boards/${boardId}/posts`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ body: 'Smoke test post', userId })
   });
-  assert.equal(postRes.post.author, aliasName);
+  assert.equal(postRes.post.alias, aliasName);
 
   console.info('[smoke] waiting for write to settle');
   await delay(100);
 
   console.info('[smoke] fetching feed');
   const feedRes = await request(`/boards/${boardId}/feed?limit=1`);
-  const [first] = feedRes.posts as Array<{ author: string; body: string }>;
+  const [first] = feedRes.posts as Array<{ author: string; body: string; alias: string }>;
   assert(first, 'no posts returned');
-  assert.equal(first.author, aliasName);
+  assert.equal(first.alias, aliasName);
   assert.equal(first.body, 'Smoke test post');
 
   console.info('[smoke] flow verified');

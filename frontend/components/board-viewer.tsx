@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { useBoardEvents } from '../hooks/use-board-events';
 import type {
   BoardAlias,
   BoardEventPayload,
@@ -14,7 +13,10 @@ import type {
   UpsertAliasResponse,
   UpdateReactionResponse
 } from '@board-app/shared';
+import { useBoardEvents } from '../hooks/use-board-events';
+import { useToast } from './toast-provider';
 import { useIdentityContext } from '../context/identity-context';
+type HttpError = Error & { status?: number; payload?: any };
 
 interface BoardViewerProps {
   boardId: string;
@@ -28,9 +30,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     setIdentity: setSharedIdentity,
     setAlias: setSharedAlias,
     getAlias,
+    session,
+    setSession,
+    refreshSession,
     hydrated: identityHydrated
   } = useIdentityContext();
-    useIdentityContext();
   const { events, status, error } = useBoardEvents(boardId, { workerBaseUrl });
   const [boardMeta, setBoardMeta] = useState<BoardSummary | null>(null);
   const [posts, setPosts] = useState<BoardPost[]>([]);
@@ -49,6 +53,25 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [aliasLoading, setAliasLoading] = useState<boolean>(false);
   const [aliasInput, setAliasInput] = useState(sharedAlias?.alias ?? '');
+  const quietPrompts = useMemo(
+    () => [
+      {
+        title: 'It’s quiet right now…',
+        body: 'Be the first to share a campus update or plan a meetup.'
+      },
+        {
+        title: 'Start the conversation',
+        body: 'Share a study tip, a lunch meetup, or a quick shout-out to your floor.'
+      },
+      {
+        title: 'Need inspiration?',
+        body: 'Try posting about today’s events, a lost item, or a quick poll for your dorm.'
+      }
+    ],
+    []
+  );
+  const quietModePrompt = useMemo(() => quietPrompts[Math.floor(Math.random() * quietPrompts.length)], [quietPrompts]);
+  const { addToast } = useToast();
 
   useEffect(() => {
     setAliasStatus(null);
@@ -56,6 +79,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   }, [identity?.id, boardId]);
 
   useEffect(() => {
+    if (!identityHydrated) return;
     if (sharedIdentity && sharedIdentity.id !== identity?.id) {
       setIdentity(sharedIdentity);
       setReactionUserId(sharedIdentity.id);
@@ -65,13 +89,14 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       setIdentity(null);
       setReactionUserId('');
     }
-  }, [sharedIdentity, identity]);
+  }, [sharedIdentity, identity, identityHydrated]);
 
   useEffect(() => {
+    if (!identityHydrated) return;
     if (identity?.id !== sharedIdentity?.id) {
       setSharedIdentity(identity);
     }
-  }, [identity, sharedIdentity, setSharedIdentity]);
+  }, [identity, sharedIdentity, setSharedIdentity, identityHydrated]);
 
   const statusLabel = useMemo(() => {
     if (status === 'connected') return 'Live';
@@ -96,6 +121,49 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const sortedEvents = useMemo(() => events.slice().sort((a, b) => a.timestamp - b.timestamp), [events]);
 
   const effectiveIdentity = identityHydrated ? identity : null;
+  const sessionToken = session?.token ?? null;
+  const buildHeaders = useCallback(
+    (base: HeadersInit = {}) => {
+      const headers = new Headers(base);
+      if (sessionToken) {
+        headers.set('Authorization', `Bearer ${sessionToken}`);
+      }
+      return headers;
+    },
+    [sessionToken]
+  );
+  const registerLabel = effectiveIdentity ? 'Re-register' : 'Register';
+
+  const raiseForStatus = useCallback((res: Response, payload: any, fallback: string) => {
+    if (!res.ok) {
+      const error = new Error(payload?.error ?? fallback) as HttpError;
+      error.status = res.status;
+      error.payload = payload;
+      throw error;
+    }
+  }, []);
+
+  const handleSessionError = useCallback(
+    async (error: unknown, workerBaseUrl: string, setMessage?: (msg: string) => void) => {
+      const httpError = error as HttpError;
+      if (httpError?.status === 401) {
+        const refreshed = await refreshSession(workerBaseUrl);
+        if (refreshed) {
+          return 'refreshed';
+        }
+        setSession(null);
+        const message = httpError.payload?.error || 'Session expired. Re-register identity.';
+        if (setMessage) {
+          setMessage(message);
+        } else {
+          setIdentityError(message);
+        }
+        return 'expired';
+      }
+      return 'noop';
+    },
+    [refreshSession, setSession, setIdentityError]
+  );
 
   const boardAliasLookup = useMemo(() => {
     const map = new Map<string, string>();
@@ -149,7 +217,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   }, [identity]);
 
   useEffect(() => {
-    if (!identity) {
+    if (!identity || !sessionToken) {
       setAlias(null);
       setAliasInput('');
       return;
@@ -165,12 +233,13 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     async function fetchAlias() {
       try {
         const res = await fetch(
-          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases?userId=${encodeURIComponent(identity.id)}`
+          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases?userId=${encodeURIComponent(identity.id)}`,
+          {
+            headers: buildHeaders()
+          }
         );
-        if (!res.ok) {
-          throw new Error(`Failed to load alias (${res.status})`);
-        }
         const body: GetAliasResponse = await res.json();
+        raiseForStatus(res, body, `Failed to load alias (${res.status})`);
         if (!cancelled) {
           const nextAlias = body.alias ?? null;
           setAlias(nextAlias);
@@ -179,7 +248,17 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           }
         }
       } catch (error) {
-        if (!cancelled) {
+        if (cancelled) return;
+        const outcome = await handleSessionError(error, workerBaseUrl, msg => {
+          setAliasError(msg);
+          setAlias(null);
+          setAliasInput('');
+        });
+        if (outcome === 'refreshed') {
+          await fetchAlias();
+          return;
+        }
+        if (outcome !== 'expired') {
           console.warn('[ui] failed to fetch alias', error);
           setAlias(null);
         }
@@ -191,9 +270,10 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [identity, boardId, workerBaseUrl, sharedAlias]);
+  }, [identity, boardId, workerBaseUrl, sharedAlias, sessionToken]);
 
   useEffect(() => {
+    if (!identityHydrated) return;
     if (!identity) {
       if (sharedAlias) {
         setSharedAlias(boardId, null);
@@ -209,7 +289,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     if (alias && (!sharedAlias || sharedAlias.id !== alias.id || sharedAlias.alias !== alias.alias)) {
       setSharedAlias(boardId, alias);
     }
-  }, [alias, sharedAlias, boardId, identity?.id, setSharedAlias]);
+  }, [alias, sharedAlias, boardId, identity?.id, setSharedAlias, identityHydrated]);
 
   useEffect(() => {
     if (alias?.alias) {
@@ -292,7 +372,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
 
       const body = payload as RegisterIdentityResponse;
       setIdentity(body.user);
+      setSession(body.session);
       form.reset();
+      addToast({ title: 'Identity registered', description: 'You can now post and react.' });
     } catch (error) {
       setIdentityError((error as Error).message ?? 'Failed to register identity');
     } finally {
@@ -318,6 +400,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       return;
     }
 
+    if (!sessionToken) {
+      setReactionStatus('Session expired. Re-register identity.');
+      return;
+    }
+
     if (!action) {
       setReactionStatus('Choose a reaction action.');
       return;
@@ -326,28 +413,40 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     setReactionLoading(true);
     setReactionStatus(null);
 
-    try {
+    const attempt = async () => {
       const res = await fetch(
         `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(reactionPostId)}/reactions`,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: buildHeaders({ 'content-type': 'application/json' }),
           body: JSON.stringify({ userId, action })
         }
       );
 
       const payload = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(payload?.error ?? `Failed to update reaction (${res.status})`);
-      }
+      raiseForStatus(res, payload, `Failed to update reaction (${res.status})`);
 
       const body = payload as UpdateReactionResponse;
       setReactionStatus(
         `Acknowledged • Post ${body.postId}: 👍 ${body.reactions.likeCount} / 👎 ${body.reactions.dislikeCount}`
       );
+    };
+
+    try {
+      await attempt();
     } catch (error) {
-      setReactionStatus((error as Error).message ?? 'Failed to send reaction');
+      const outcome = await handleSessionError(error, workerBaseUrl, msg => setReactionStatus(msg));
+      if (outcome === 'refreshed') {
+        try {
+          await attempt();
+          return;
+        } catch (retryError) {
+          setReactionStatus((retryError as Error).message ?? 'Failed to send reaction');
+        }
+      }
+      if (outcome !== 'expired') {
+        setReactionStatus((error as Error).message ?? 'Failed to send reaction');
+      }
     } finally {
       setReactionLoading(false);
     }
@@ -364,6 +463,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       return;
     }
 
+    if (!sessionToken) {
+      setAliasError('Session expired. Re-register identity.');
+      return;
+    }
+
     if (!aliasValue) {
       setAliasError('Alias cannot be empty.');
       return;
@@ -373,25 +477,38 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     setAliasError(null);
     setAliasStatus(null);
 
-    try {
+    const attempt = async () => {
       const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases`, {
         method: alias ? 'PUT' : 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: buildHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify({ userId: identity.id, alias: aliasValue })
       });
 
       const payload = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(payload?.error ?? `Failed to update alias (${res.status})`);
-      }
+      raiseForStatus(res, payload, `Failed to update alias (${res.status})`);
 
       const body = payload as UpsertAliasResponse;
       setAlias(body.alias);
       setAliasInput(body.alias.alias);
       setAliasStatus(`Alias set to “${body.alias.alias}”.`);
+      addToast({ title: 'Alias saved', description: `Showing as ${body.alias.alias} on this board.` });
+    };
+
+    try {
+      await attempt();
     } catch (error) {
-      setAliasError((error as Error).message ?? 'Failed to update alias');
+      const outcome = await handleSessionError(error, workerBaseUrl, msg => setAliasError(msg));
+      if (outcome === 'refreshed') {
+        try {
+          await attempt();
+          return;
+        } catch (retryError) {
+          setAliasError((retryError as Error).message ?? 'Failed to update alias');
+        }
+      }
+      if (outcome !== 'expired') {
+        setAliasError((error as Error).message ?? 'Failed to update alias');
+      }
     } finally {
       setAliasLoading(false);
     }
@@ -406,17 +523,34 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
 
     const payload = message ? { body: message } : {};
 
-    try {
+    const attempt = async () => {
       const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/events`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: buildHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify({ event: type, data: payload })
       });
-      if (!res.ok) {
-        throw new Error(`Failed to send event (${res.status})`);
-      }
+      const responsePayload = await res.json().catch(() => ({}));
+      raiseForStatus(res, responsePayload, `Failed to send event (${res.status})`);
       form.reset();
+      addToast({ title: 'Event dispatched', description: `Sent ${type} event to listeners.` });
+    };
+
+    try {
+      await attempt();
     } catch (error) {
+      const outcome = await handleSessionError(error, workerBaseUrl, msg => setIdentityError(msg));
+      if (outcome === 'refreshed') {
+        try {
+          await attempt();
+          return;
+        } catch (retryError) {
+          console.error('[ui] failed to inject event', retryError);
+        }
+      }
+      if (outcome === 'expired') {
+        alert('Session expired. Re-register identity.');
+        return;
+      }
       console.error('[ui] failed to inject event', error);
       alert('Failed to send event. See console for details.');
     }
@@ -430,25 +564,48 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     const author = (formData.get('postAuthor') as string)?.trim();
 
     if (!body) {
-      alert('Post message cannot be empty.');
+      addToast({ title: 'Message required', description: 'Enter a post before submitting.' });
       return;
     }
 
-    try {
+    if (!identity || !sessionToken) {
+      addToast({ title: 'Session needed', description: 'Register or refresh your identity first.' });
+      return;
+    }
+
+    const attempt = async () => {
       const resolvedAuthor = author || alias?.alias || identity?.pseudonym || undefined;
       const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: buildHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify({ body, author: resolvedAuthor, userId: identity?.id || undefined })
       });
-      if (!res.ok) {
-        throw new Error(`Failed to create post (${res.status})`);
-      }
+      const payload = await res.json().catch(() => ({}));
+      raiseForStatus(res, payload, `Failed to create post (${res.status})`);
       form.reset();
       await fetchFeed();
+      addToast({ title: 'Post published', description: 'Shared with everyone on this board.' });
+    };
+
+    try {
+      await attempt();
     } catch (err) {
+      const outcome = await handleSessionError(err, workerBaseUrl, msg => setIdentityError(msg));
+      if (outcome === 'refreshed') {
+        try {
+          await attempt();
+          return;
+        } catch (retryError) {
+          console.error('[ui] failed to create post', retryError);
+          addToast({ title: 'Post failed', description: 'See console for details.' });
+        }
+      }
+      if (outcome === 'expired') {
+        addToast({ title: 'Session expired', description: 'Re-register identity to keep posting.' });
+        return;
+      }
       console.error('[ui] failed to create post', err);
-      alert('Failed to create post. See console for details.');
+      addToast({ title: 'Post failed', description: 'See console for details.' });
     }
   }
 
@@ -464,10 +621,15 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           </div>
           <h1 className="text-4xl font-semibold text-white">{boardMeta?.displayName ?? boardId}</h1>
           <p className="text-sm text-slate-400">
-            Connected to <code className="rounded bg-slate-900 px-1">{workerBaseUrl}</code>
+            Connected to <code className="rounded bg-slate-900 px-1">{workerBaseUrl}</code>{' '}
+            · showing posts within {sharedAlias ? 'your saved radius' : 'an adaptive radius'}
           </p>
-          {boardMeta?.description && (
+          {boardMeta?.description ? (
             <p className="text-sm text-slate-500">{boardMeta.description}</p>
+          ) : (
+            <p className="text-sm text-slate-500">
+              Stay updated on events and drop-ins happening around this part of campus.
+            </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-400">
             {effectiveIdentity ? (
@@ -519,14 +681,39 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 disabled={identityLoading}
                 className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
               >
-                {identityLoading ? 'Registering…' : 'Register'}
+                {identityLoading ? 'Registering…' : registerLabel}
               </button>
             </div>
-            {identity && (
-              <p className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
-                Active identity: <span className="font-semibold text-slate-200">{identity.pseudonym}</span>{' '}
-                <code className="ml-1 rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-300">{identity.id}</code>
-              </p>
+            {effectiveIdentity && (
+              <div className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
+                <p>
+                  Active identity:{' '}
+                  <span className="font-semibold text-slate-200">{effectiveIdentity.pseudonym}</span>{' '}
+                  <code className="ml-1 rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-300">{effectiveIdentity.id}</code>
+                </p>
+                {alias && (
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Board alias: <span className="font-semibold text-slate-200">{alias.alias}</span>
+                  </p>
+                )}
+                <Link
+                  href="/profile"
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-sky-300 transition hover:text-sky-100"
+                >
+                  Manage identity & sessions →
+                </Link>
+              </div>
+            )}
+            {effectiveIdentity && !sessionToken && (
+              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+                <p>Your session expired. Re-link your Access identity to continue posting.</p>
+                <Link
+                  href="/profile"
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-amber-200 underline-offset-4 hover:text-amber-100 hover:underline"
+                >
+                  Re-link session →
+                </Link>
+              </div>
             )}
             {identityError && (
               <p className="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{identityError}</p>
@@ -592,39 +779,84 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                   className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
                 />
               </label>
-              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
-                Message
-                <input
-                  name="postBody"
-                  placeholder="Share an update"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
-                  required
-                />
-              </label>
-              <button
-                type="submit"
-                className="self-end rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
-              >
-                Post
-              </button>
+              {sessionToken ? (
+                <>
+                  <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                    Message
+                    <input
+                      name="postBody"
+                      placeholder="Share an update"
+                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="self-end rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                  >
+                    Post
+                  </button>
+                </>
+              ) : (
+                <div className="flex flex-1 items-center justify-between rounded-md border border-dashed border-slate-800 bg-slate-900/40 px-4 py-3 text-xs text-slate-400">
+                  <span>Session expired. Re-register identity to post.</span>
+                  <Link
+                    href="/profile"
+                    className="rounded-md border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
+                  >
+                    Manage Session
+                  </Link>
+                </div>
+              )}
             </div>
           </form>
 
           <h2 className="text-lg font-semibold text-slate-200">Recent Posts</h2>
-          {feedError && (
-            <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">{feedError}</p>
-          )}
-          {feedLoading && !feedError && (
-            <p className="mt-4 text-sm text-slate-500">Loading posts…</p>
-          )}
-          {!feedLoading && posts.length === 0 && !feedError && (
-            <div className="mt-4 rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center text-sm text-slate-500">
-              No posts yet. Use the form above to create one.
-            </div>
-          )}
+        {feedError && (
+          <p className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">{feedError}</p>
+        )}
+        {feedLoading && !feedError && (
+          <p className="mt-4 text-sm text-slate-500">Loading posts…</p>
+        )}
+        {!feedLoading && effectiveIdentity && !sessionToken && (
+          <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+            <p>Your session expired. Re-link your Access identity to continue participating.</p>
+            <Link
+              href="/profile"
+              className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-amber-200 underline-offset-4 hover:text-amber-100 hover:underline"
+            >
+              Re-link session →
+            </Link>
+          </div>
+        )}
+        {!feedLoading && !feedError && posts.length > 0 && posts.length < 3 && quietModePrompt && (
+          <div className="mt-4 rounded-xl border border-dashed border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-300">
+            <h3 className="text-base font-semibold text-slate-200">{quietModePrompt.title}</h3>
+            <p className="mt-2 text-sm text-slate-400">{quietModePrompt.body}</p>
+            <button
+              type="button"
+              onClick={() => {
+                addToast({ title: 'Ready to post?', description: 'Share something with your board.' });
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="mt-3 inline-flex items-center gap-1 rounded-md border border-sky-500/40 px-3 py-1 text-xs uppercase tracking-[2px] text-sky-300 transition hover:border-sky-400 hover:text-sky-100"
+            >
+              Create a post →
+            </button>
+          </div>
+        )}
+        {!feedLoading && posts.length === 0 && !feedError && (
+          <div className="mt-4 rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center text-sm text-slate-500">
+            No posts yet. Use the form above to create one.
+          </div>
+        )}
           <div className="mt-4 space-y-4">
             {posts.map(post => {
               const isMine = effectiveIdentity?.id && post.userId === effectiveIdentity.id;
+              const aliasLabel = post.alias || post.author || post.pseudonym || 'Anon';
+              const aliasClasses = post.alias
+                ? 'rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-sky-200'
+                : 'rounded border border-slate-800 bg-slate-950/70 px-1.5 py-0.5 text-slate-200';
               return (
                 <article
                   key={post.id}
@@ -643,9 +875,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                         )}
                         <span className="flex items-center gap-1 text-slate-400">
                           <span className="text-[10px] uppercase tracking-[2px] text-slate-500">Alias</span>
-                        <span className="rounded border border-slate-800 bg-slate-950/70 px-1.5 py-0.5 text-slate-200">
-                          {post.alias || post.author || post.pseudonym || 'Anon'}
-                        </span>
+                          <span className={aliasClasses}>{aliasLabel}</span>
                         </span>
                         {isMine && (
                           <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-medium text-emerald-300">

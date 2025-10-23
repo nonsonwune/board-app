@@ -8,7 +8,8 @@ import {
   createUser,
   upsertBoardAlias,
   applyReaction,
-  getBoardAlias
+  getBoardAlias,
+  __internal
 } from '../index';
 import type { Env } from '../index';
 
@@ -63,7 +64,7 @@ class BoundPrepared {
       this.db.events.push({ params: this.params });
     }
     if (this.sql.startsWith('INSERT INTO users')) {
-      const [id, pseudonym, normalized, createdAt] = this.params;
+      const [id, pseudonym, normalized, createdAt, status] = this.params;
       if (Array.from(this.db.users.values()).some(user => user.pseudonym_normalized === normalized)) {
         throw new Error('UNIQUE constraint failed: users.pseudonym_normalized');
       }
@@ -71,7 +72,8 @@ class BoundPrepared {
         id,
         pseudonym,
         pseudonym_normalized: normalized,
-        created_at: createdAt
+        created_at: createdAt,
+        status: status ?? 'active'
       });
     }
     if (this.sql.startsWith('INSERT INTO board_aliases')) {
@@ -108,6 +110,25 @@ class BoundPrepared {
       }
       this.db.aliasLookup.set(aliasKey, userId);
     }
+    if (this.sql.startsWith('INSERT INTO user_access_links')) {
+      const [subject, userId, email] = this.params;
+      const existing = this.db.accessLinks.get(subject);
+      if (!existing) {
+        for (const link of this.db.accessLinks.values()) {
+          if (link.user_id === userId) {
+            throw new Error('UNIQUE constraint failed: user_access_links.user_id');
+          }
+        }
+        this.db.accessLinks.set(subject, {
+          access_subject: subject,
+          user_id: userId,
+          email: email ?? null
+        });
+      } else {
+        existing.user_id = userId;
+        existing.email = email ?? null;
+      }
+    }
     if (this.sql.startsWith('INSERT INTO reactions')) {
       const [id, postId, boardId, userId, reaction, createdAt] = this.params;
       const key = `${postId}:${userId}`;
@@ -134,6 +155,13 @@ class BoundPrepared {
         post.like_count = likeCount;
         post.dislike_count = dislikeCount;
         post.reaction_count = total;
+      }
+    }
+    if (this.sql.startsWith('UPDATE users SET status')) {
+      const [status, userId] = this.params;
+      const user = this.db.users.get(userId);
+      if (user) {
+        user.status = status;
       }
     }
     if (this.sql.startsWith('DELETE FROM reactions')) {
@@ -203,6 +231,16 @@ class BoundPrepared {
       }
       return { like_count: likeCount, dislike_count: dislikeCount } as T;
     }
+    if (this.sql.startsWith('SELECT access_subject, user_id, email FROM user_access_links WHERE access_subject')) {
+      const subject = this.params[0];
+      const link = this.db.accessLinks.get(subject);
+      return link ? (link as T) : undefined;
+    }
+    if (this.sql.startsWith('SELECT access_subject, user_id, email FROM user_access_links WHERE user_id')) {
+      const userId = this.params[0];
+      const link = Array.from(this.db.accessLinks.values()).find(entry => entry.user_id === userId);
+      return link ? (link as T) : undefined;
+    }
     return undefined;
   }
 }
@@ -217,6 +255,7 @@ class MockD1 {
   aliases = new Map<string, any>();
   aliasLookup = new Map<string, string>();
   reactions = new Map<string, any>();
+  accessLinks = new Map<string, { access_subject: string; user_id: string; email: string | null }>();
 
   async exec(sql: string) {
     this.execCalls.push({ sql });
@@ -245,7 +284,7 @@ describe('storage helpers', () => {
     const schemaCalls = env.BOARD_DB.prepareCalls.filter(call =>
       call.sql.startsWith('CREATE TABLE') || call.sql.startsWith('CREATE INDEX')
     );
-    expect(schemaCalls).toHaveLength(8);
+    expect(schemaCalls).toHaveLength(11);
     expect(schemaCalls[0].sql).toContain('CREATE TABLE IF NOT EXISTS boards');
   });
 
@@ -257,7 +296,7 @@ describe('storage helpers', () => {
     const schemaCalls = env.BOARD_DB.prepareCalls.filter(call =>
       call.sql.startsWith('CREATE TABLE') || call.sql.startsWith('CREATE INDEX')
     );
-    expect(schemaCalls).toHaveLength(8); // schema called once
+    expect(schemaCalls).toHaveLength(11); // schema called once
   });
 
   it('creates and lists posts', async () => {
@@ -316,5 +355,25 @@ describe('storage helpers', () => {
 
     const cleared = await applyReaction(env, board.id, post.id, user.id, 'remove');
     expect(cleared.total).toBe(0);
+  });
+
+  it('auto provisions access users and allows explicit relinking', async () => {
+    const principal = { subject: 'https://access.example.com/user/12345', email: 'jane@example.com' };
+    const autoUser = await __internal.resolveAccessUser(env, principal);
+    expect(autoUser.pseudonym.length).toBeGreaterThan(0);
+    const autoLink = env.BOARD_DB.accessLinks.get(principal.subject);
+    expect(autoLink?.user_id).toBe(autoUser.id);
+    expect(env.BOARD_DB.users.get(autoUser.id)?.status).toBe('access_auto');
+
+    const legacyUser = await createUser(env, 'LegacyUser', 'legacyuser');
+    await expect(__internal.ensureAccessPrincipalForUser(env, principal, legacyUser.id)).rejects.toThrow(
+      'access identity mismatch'
+    );
+
+    await __internal.ensureAccessPrincipalForUser(env, principal, legacyUser.id, { allowReassign: true });
+    const updatedLink = env.BOARD_DB.accessLinks.get(principal.subject);
+    expect(updatedLink?.user_id).toBe(legacyUser.id);
+    expect(env.BOARD_DB.users.get(legacyUser.id)?.status).toBe('active');
+    expect(env.BOARD_DB.users.get(autoUser.id)?.status).toBe('access_orphan');
   });
 });

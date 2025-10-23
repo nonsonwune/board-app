@@ -7,7 +7,6 @@ import type {
   BoardSummary,
   CreatePostRequest,
   CreatePostResponse,
-  BoardAlias,
   RegisterIdentityRequest,
   RegisterIdentityResponse,
   UpsertAliasRequest,
@@ -18,17 +17,24 @@ import type {
   ReactionSummary,
   ReactionAction,
   UserProfile,
-  BoardAlias
+  BoardAlias,
+  SessionTicket,
+  CreateSessionRequest,
+  CreateSessionResponse
 } from '@board-app/shared';
+import { SESSION_TTL_MS } from '@board-app/shared';
 
 type WebSocketRequest = Request & { webSocket?: WebSocket };
 
 export interface Env {
   BOARD_DB: D1Database;
   BOARD_ROOM_DO: DurableObjectNamespace;
+  ACCESS_JWT_AUDIENCE?: string;
+  ACCESS_JWT_ISSUER?: string;
+  ACCESS_JWT_JWKS_URL?: string;
 }
 
-const ALLOWED_ORIGINS = ['http://localhost:3000'];
+const ALLOWED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3002'];
 const boardRooms = new Map<string, BoardRoom>();
 let schemaInitialized = false;
 let schemaInitPromise: Promise<void> | null = null;
@@ -37,6 +43,45 @@ const PSEUDONYM_MIN = 3;
 const PSEUDONYM_MAX = 20;
 const ALIAS_MIN = 3;
 const ALIAS_MAX = 24;
+const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const textEncoder = new TextEncoder();
+
+type CachedJwks = {
+  keys: JsonWebKey[];
+  fetchedAt: number;
+};
+
+const jwksCache = new Map<string, CachedJwks>();
+const cryptoKeyCache = new Map<string, CryptoKey>();
+
+interface AccessJwtConfig {
+  issuer: string;
+  audience: string;
+  jwksUrl?: string;
+}
+
+interface AccessPrincipal {
+  subject?: string;
+  email?: string;
+}
+
+interface UserAccessLink {
+  access_subject: string;
+  user_id: string;
+  email: string | null;
+}
+
+class ApiError extends Error {
+  status: number;
+  body: Record<string, unknown>;
+
+  constructor(status: number, body: Record<string, unknown>) {
+    super(typeof body.error === 'string' ? body.error : 'error');
+    this.status = status;
+    this.body = body;
+  }
+}
 
 function allowOrigin(origin: string | null) {
   if (!origin) return '*';
@@ -52,6 +97,13 @@ function normalizeHandle(value: string) {
 
 function isUniqueConstraintError(error: unknown) {
   return error instanceof Error && /UNIQUE constraint failed/i.test(error.message ?? '');
+}
+
+function parseBearerToken(request: Request) {
+  const header = request.headers.get('Authorization') ?? request.headers.get('authorization');
+  if (!header) return null;
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : null;
 }
 
 function withCors(request: Request, response: Response) {
@@ -71,6 +123,160 @@ function withCors(request: Request, response: Response) {
 export function __resetSchemaForTests() {
   schemaInitialized = false;
   schemaInitPromise = null;
+}
+
+function getAccessJwtConfig(env: Env): AccessJwtConfig | null {
+  const issuer = env.ACCESS_JWT_ISSUER?.trim();
+  const audience = env.ACCESS_JWT_AUDIENCE?.trim();
+  if (!issuer || !audience) {
+    return null;
+  }
+
+  const jwksUrl = env.ACCESS_JWT_JWKS_URL?.trim();
+  return { issuer, audience, jwksUrl: jwksUrl || undefined };
+}
+
+function base64UrlToBase64(input: string) {
+  const padded = input.padEnd(Math.ceil(input.length / 4) * 4, '=');
+  return padded.replace(/-/g, '+').replace(/_/g, '/');
+}
+
+function decodeJwtSegment(segment: string): any {
+  const base64 = base64UrlToBase64(segment);
+  try {
+    const json = atob(base64);
+    return JSON.parse(json);
+  } catch (error) {
+    throw new ApiError(401, { error: 'invalid access token' });
+  }
+}
+
+function base64UrlToUint8Array(segment: string): Uint8Array {
+  const base64 = base64UrlToBase64(segment);
+  const binary = atob(base64);
+  const array = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    array[i] = binary.charCodeAt(i);
+  }
+  return array;
+}
+
+async function fetchJwks(config: AccessJwtConfig): Promise<JsonWebKey[]> {
+  const jwksEndpoint = config.jwksUrl ?? `${config.issuer.replace(/\/$/, '')}/cdn-cgi/access/certs`;
+  const cached = jwksCache.get(jwksEndpoint);
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < JWKS_CACHE_TTL_MS) {
+    return cached.keys;
+  }
+
+  const res = await fetch(jwksEndpoint, { cf: { cacheEverything: false } });
+  if (!res.ok) {
+    throw new ApiError(500, { error: 'failed to load access keys' });
+  }
+  let body: { keys?: JsonWebKey[] };
+  try {
+    body = (await res.json()) as { keys?: JsonWebKey[] };
+  } catch (error) {
+    throw new ApiError(500, { error: 'invalid access keys response' });
+  }
+  if (!Array.isArray(body.keys) || body.keys.length === 0) {
+    throw new ApiError(500, { error: 'no access keys available' });
+  }
+
+  jwksCache.set(jwksEndpoint, { keys: body.keys, fetchedAt: now });
+  return body.keys;
+}
+
+async function getCryptoKeyFromJwks(config: AccessJwtConfig, header: { kid?: string; alg?: string }) {
+  const kid = header.kid;
+  if (!kid) {
+    throw new ApiError(401, { error: 'invalid access token header' });
+  }
+
+  const jwks = await fetchJwks(config);
+  const jwk = jwks.find(key => key.kid === kid);
+  if (!jwk) {
+    throw new ApiError(401, { error: 'untrusted access key' });
+  }
+
+  const cacheKey = `${config.jwksUrl ?? config.issuer}|${kid}`;
+  let cryptoKey = cryptoKeyCache.get(cacheKey);
+  if (!cryptoKey) {
+    if (header.alg && header.alg !== 'RS256') {
+      throw new ApiError(401, { error: 'unsupported access token algorithm' });
+    }
+    cryptoKey = await crypto.subtle.importKey(
+      'jwk',
+      jwk,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    cryptoKeyCache.set(cacheKey, cryptoKey);
+  }
+
+  return cryptoKey;
+}
+
+async function verifyAccessJwt(request: Request, env: Env): Promise<AccessPrincipal | null> {
+  const config = getAccessJwtConfig(env);
+  if (!config) {
+    return null;
+  }
+
+  const token =
+    request.headers.get('Cf-Access-Jwt-Assertion') ?? request.headers.get('cf-access-jwt-assertion');
+  if (!token) {
+    return null;
+  }
+
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    throw new ApiError(401, { error: 'malformed access token' });
+  }
+
+  const [headerSegment, payloadSegment, signatureSegment] = parts;
+  const header = decodeJwtSegment(headerSegment) as { kid?: string; alg?: string; typ?: string };
+  const payload = decodeJwtSegment(payloadSegment) as {
+    iss?: string;
+    aud?: string | string[];
+    exp?: number;
+    nbf?: number;
+    sub?: string;
+    email?: string;
+  };
+
+  if (payload.iss !== config.issuer) {
+    throw new ApiError(401, { error: 'unauthorized access token issuer' });
+  }
+  const audience = payload.aud;
+  const matchesAudience = Array.isArray(audience)
+    ? audience.includes(config.audience)
+    : audience === config.audience;
+  if (!matchesAudience) {
+    throw new ApiError(401, { error: 'unauthorized access token audience' });
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp === 'number' && payload.exp < nowSeconds) {
+    throw new ApiError(401, { error: 'access token expired' });
+  }
+  if (typeof payload.nbf === 'number' && payload.nbf > nowSeconds + 60) {
+    throw new ApiError(401, { error: 'access token not yet valid' });
+  }
+
+  const cryptoKey = await getCryptoKeyFromJwks(config, header);
+  const signature = base64UrlToUint8Array(signatureSegment);
+  const data = textEncoder.encode(`${headerSegment}.${payloadSegment}`);
+  const verified = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', cryptoKey, signature, data);
+  if (!verified) {
+    throw new ApiError(401, { error: 'invalid access token signature' });
+  }
+
+  return {
+    subject: payload.sub ?? '',
+    email: payload.email
+  };
 }
 
 async function ensureSchema(env: Env) {
@@ -108,7 +314,8 @@ async function ensureSchema(env: Env) {
       const alterStatements = [
         `ALTER TABLE posts ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0`,
         `ALTER TABLE posts ADD COLUMN dislike_count INTEGER NOT NULL DEFAULT 0`,
-        `ALTER TABLE posts ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL`
+        `ALTER TABLE posts ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL`,
+        `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`
       ];
 
       for (const sql of alterStatements) {
@@ -267,30 +474,339 @@ async function listPosts(env: Env, boardId: string, limit: number): Promise<Shar
   }));
 }
 
-async function createUser(env: Env, pseudonym: string, normalized: string): Promise<UserProfile> {
+async function issueSessionTicket(env: Env, userId: string): Promise<SessionTicket> {
+  await ensureSchema(env);
+  const token = crypto.randomUUID().replace(/-/g, '');
+  const createdAt = Date.now();
+  const expiresAt = createdAt + SESSION_TTL_MS;
+  await env.BOARD_DB.prepare(
+    `INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)`
+  )
+    .bind(token, userId, createdAt, expiresAt)
+    .run();
+
+  return {
+    token,
+    userId,
+    expiresAt
+  };
+}
+
+async function getSessionByToken(env: Env, token: string): Promise<SessionRecord | null> {
+  await ensureSchema(env);
+  const record = await env.BOARD_DB.prepare(
+    'SELECT token, user_id, created_at, expires_at FROM sessions WHERE token = ?1'
+  )
+    .bind(token)
+    .first<SessionRecord>();
+
+  if (!record) {
+    return null;
+  }
+
+  if (record.expires_at < Date.now()) {
+    await env.BOARD_DB.prepare('DELETE FROM sessions WHERE token = ?1').bind(token).run();
+    return null;
+  }
+
+  return record;
+}
+
+async function getSessionFromRequest(request: Request, env: Env): Promise<SessionRecord> {
+  const token = parseBearerToken(request);
+  if (!token) {
+    throw new ApiError(401, { error: 'authorization required' });
+  }
+
+  const session = await getSessionByToken(env, token);
+  if (!session) {
+    throw new ApiError(401, { error: 'invalid session' });
+  }
+
+  return session;
+}
+
+async function ensureSession(request: Request, env: Env, userId: string): Promise<SessionRecord> {
+  const accessContext = await verifyAccessJwt(request, env);
+  const session = await getSessionFromRequest(request, env);
+  if (session.user_id !== userId) {
+    throw new ApiError(401, { error: 'invalid session' });
+  }
+
+  await ensureAccessPrincipalForUser(env, accessContext, session.user_id);
+
+  return session;
+}
+
+async function createUser(
+  env: Env,
+  pseudonym: string,
+  normalized: string,
+  status: 'active' | 'access_auto' | 'access_orphan' = 'active'
+): Promise<UserProfile> {
   await ensureSchema(env);
   const id = crypto.randomUUID();
   const createdAt = Date.now();
 
   await env.BOARD_DB.prepare(
-    `INSERT INTO users (id, pseudonym, pseudonym_normalized, created_at)
-       VALUES (?1, ?2, ?3, ?4)`
+    `INSERT INTO users (id, pseudonym, pseudonym_normalized, created_at, status)
+       VALUES (?1, ?2, ?3, ?4, ?5)`
   )
-    .bind(id, pseudonym, normalized, createdAt)
+    .bind(id, pseudonym, normalized, createdAt, status)
     .run();
 
   return { id, pseudonym, createdAt };
 }
 
+async function createUserWithUniquePseudonym(env: Env, basePseudonym: string): Promise<UserProfile> {
+  let attempt = 0;
+  while (attempt < 10) {
+    const suffix = attempt === 0 ? '' : `-${attempt}`;
+    let candidate = `${basePseudonym}${suffix}`.slice(0, PSEUDONYM_MAX);
+    if (candidate.length < PSEUDONYM_MIN) {
+      candidate = candidate.padEnd(PSEUDONYM_MIN, 'x');
+    }
+    const normalized = normalizeHandle(candidate);
+    if (!normalized) {
+      attempt += 1;
+      continue;
+    }
+    try {
+      return await createUser(env, candidate, normalized, 'access_auto');
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        attempt += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new ApiError(500, { error: 'failed to create unique pseudonym' });
+}
+
+function deriveAccessPseudonym(principal: AccessPrincipal): string {
+  const emailLocal = principal?.email?.split('@')[0] ?? '';
+  const subjectFragment = principal?.subject?.split('/').at(-1) ?? principal?.subject ?? '';
+  const source = emailLocal || subjectFragment;
+  let cleaned = source.replace(/[^a-zA-Z0-9]+/g, ' ').trim();
+  if (!cleaned) {
+    cleaned = 'Board User';
+  }
+  let base = cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map(word => word[0]?.toUpperCase() + word.slice(1))
+    .join(' ')
+    .slice(0, PSEUDONYM_MAX);
+  if (base.length < PSEUDONYM_MIN) {
+    base = `${base} User`.trim().slice(0, PSEUDONYM_MAX);
+  }
+  if (base.length < PSEUDONYM_MIN) {
+    base = base.padEnd(PSEUDONYM_MIN, 'x');
+  }
+  return base;
+}
+
+function userRecordToProfile(user: UserRecord): UserProfile {
+  return {
+    id: user.id,
+    pseudonym: user.pseudonym,
+    createdAt: user.created_at
+  };
+}
+
+async function markUserStatus(env: Env, userId: string, status: 'active' | 'access_auto' | 'access_orphan') {
+  await ensureSchema(env);
+  await env.BOARD_DB.prepare('UPDATE users SET status = ?1 WHERE id = ?2')
+    .bind(status, userId)
+    .run();
+}
+
 async function getUserById(env: Env, userId: string): Promise<UserRecord | null> {
   await ensureSchema(env);
   const record = await env.BOARD_DB.prepare(
-    'SELECT id, pseudonym, pseudonym_normalized, created_at FROM users WHERE id = ?1'
+    'SELECT id, pseudonym, pseudonym_normalized, created_at, status FROM users WHERE id = ?1'
   )
     .bind(userId)
     .first<UserRecord>();
 
   return record ?? null;
+}
+
+async function getAccessLinkBySubject(env: Env, subject: string): Promise<UserAccessLink | null> {
+  await ensureSchema(env);
+  const record = await env.BOARD_DB.prepare(
+    'SELECT access_subject, user_id, email FROM user_access_links WHERE access_subject = ?1'
+  )
+    .bind(subject)
+    .first<UserAccessLink>();
+  return record ?? null;
+}
+
+async function getAccessLinkByUserId(env: Env, userId: string): Promise<UserAccessLink | null> {
+  await ensureSchema(env);
+  const record = await env.BOARD_DB.prepare(
+    'SELECT access_subject, user_id, email FROM user_access_links WHERE user_id = ?1'
+  )
+    .bind(userId)
+    .first<UserAccessLink>();
+  return record ?? null;
+}
+
+async function upsertAccessLink(
+  env: Env,
+  subject: string,
+  userId: string,
+  email: string | null
+): Promise<void> {
+  await ensureSchema(env);
+  const now = Date.now();
+  await env.BOARD_DB.prepare(
+    `INSERT INTO user_access_links (access_subject, user_id, email, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?4)
+     ON CONFLICT(access_subject) DO UPDATE SET
+       user_id = excluded.user_id,
+       email = excluded.email,
+       updated_at = excluded.updated_at`
+  )
+    .bind(subject, userId, email, now)
+    .run();
+}
+
+async function resolveAccessUser(env: Env, principal: AccessPrincipal): Promise<UserRecord> {
+  const subject = principal.subject;
+  if (!subject) {
+    throw new ApiError(401, { error: 'access subject missing' });
+  }
+
+  const existingLink = await getAccessLinkBySubject(env, subject);
+  if (existingLink) {
+    const user = await getUserById(env, existingLink.user_id);
+    if (user) {
+      if (user.status === 'access_orphan') {
+        await markUserStatus(env, user.id, 'active');
+        console.log(
+          JSON.stringify({
+            event: 'access.identity_reactivated',
+            user_id: user.id,
+            subject,
+            email: principal.email ?? existingLink.email ?? null,
+            timestamp: Date.now()
+          })
+        );
+      }
+      if (principal.email && principal.email !== existingLink.email) {
+        await upsertAccessLink(env, subject, existingLink.user_id, principal.email);
+      }
+      const refreshed = await getUserById(env, existingLink.user_id);
+      return refreshed ?? user;
+    }
+  }
+
+  const base = deriveAccessPseudonym(principal);
+  const profile = await createUserWithUniquePseudonym(env, base);
+  await upsertAccessLink(env, subject, profile.id, principal.email ?? existingLink?.email ?? null);
+  const user = await getUserById(env, profile.id);
+  if (!user) {
+    throw new ApiError(500, { error: 'failed to provision access user' });
+  }
+  await markUserStatus(env, user.id, 'access_auto');
+  console.log(
+    JSON.stringify({
+      event: 'access.identity_auto_provisioned',
+      user_id: user.id,
+      subject,
+      email: principal.email ?? null,
+      pseudonym: user.pseudonym,
+      timestamp: Date.now()
+    })
+  );
+  return user;
+}
+
+async function ensureAccessPrincipalForUser(
+  env: Env,
+  principal: AccessPrincipal | null,
+  userId: string,
+  options: { allowReassign?: boolean } = {}
+): Promise<void> {
+  if (!principal?.subject) {
+    return;
+  }
+
+  const subject = principal.subject;
+  const existingLink = await getAccessLinkBySubject(env, subject);
+
+  if (!existingLink) {
+    const linkForUser = await getAccessLinkByUserId(env, userId);
+    if (linkForUser && linkForUser.access_subject !== subject) {
+      throw new ApiError(403, { error: 'user already linked to another access identity' });
+    }
+    try {
+      await upsertAccessLink(env, subject, userId, principal.email ?? null);
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new ApiError(403, { error: 'access identity already linked' });
+      }
+      throw error;
+    }
+    await markUserStatus(env, userId, 'active');
+    console.log(
+      JSON.stringify({
+        event: 'access.identity_linked',
+        subject,
+        user_id: userId,
+        email: principal.email ?? existingLink?.email ?? null,
+        timestamp: Date.now()
+      })
+    );
+    return;
+  }
+
+  if (existingLink.user_id !== userId) {
+    if (!options.allowReassign) {
+      throw new ApiError(403, { error: 'access identity mismatch' });
+    }
+    const linkForUser = await getAccessLinkByUserId(env, userId);
+    if (linkForUser && linkForUser.access_subject !== subject) {
+      throw new ApiError(403, { error: 'user already linked to another access identity' });
+    }
+    const previousUser = await getUserById(env, existingLink.user_id);
+    if (previousUser) {
+      await markUserStatus(env, previousUser.id, 'access_orphan');
+      console.log(
+        JSON.stringify({
+          event: 'access.identity_orphaned',
+          subject,
+          user_id: previousUser.id,
+          timestamp: Date.now()
+        })
+      );
+    }
+    try {
+      await upsertAccessLink(env, subject, userId, principal.email ?? existingLink.email ?? null);
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new ApiError(403, { error: 'access identity already linked' });
+      }
+      throw error;
+    }
+    await markUserStatus(env, userId, 'active');
+    console.log(
+      JSON.stringify({
+        event: 'access.identity_relinked',
+        subject,
+        user_id: userId,
+        email: principal.email ?? existingLink.email ?? null,
+        timestamp: Date.now()
+      })
+    );
+    return;
+  }
+
+  if (principal.email && principal.email !== existingLink.email) {
+    await upsertAccessLink(env, subject, userId, principal.email);
+  }
 }
 
 async function upsertBoardAlias(
@@ -436,8 +952,16 @@ export default {
     }
 
     try {
+      if (url.pathname === '/identity/session') {
+        return withCors(request, await handleCreateSession(request, env));
+      }
+
       if (url.pathname === '/identity/register') {
         return withCors(request, await handleRegisterIdentity(request, env));
+      }
+
+      if (url.pathname === '/identity/link') {
+        return withCors(request, await handleLinkIdentity(request, env));
       }
 
       const upgradeHeader = request.headers.get('Upgrade');
@@ -467,6 +991,15 @@ export default {
 
       return withCors(request, new Response('Not Found', { status: 404 }));
     } catch (error: any) {
+      if (error instanceof ApiError) {
+        return withCors(
+          request,
+          new Response(JSON.stringify(error.body), {
+            status: error.status,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        );
+      }
       console.error('[worker] unexpected error', error);
       return withCors(
         request,
@@ -479,6 +1012,12 @@ export default {
   }
 };
 
+const __internal = {
+  resolveAccessUser,
+  ensureAccessPrincipalForUser,
+  deriveAccessPseudonym
+};
+
 export {
   ensureSchema,
   getOrCreateBoard,
@@ -488,7 +1027,8 @@ export {
   createUser,
   upsertBoardAlias,
   applyReaction,
-  getBoardAlias
+  getBoardAlias,
+  __internal
 };
 
 async function handleWebsocket(request: Request, env: Env, ctx: ExecutionContext, url: URL) {
@@ -688,6 +1228,7 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
   let user: UserRecord | null = null;
   let aliasRecord: BoardAlias | null = null;
   if (userId) {
+    await ensureSession(request, env, userId);
     user = await getUserById(env, userId);
     if (!user) {
       return new Response(JSON.stringify({ error: 'user not found', trace_id: traceId }), {
@@ -741,6 +1282,33 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
   });
 }
 
+async function handleLinkIdentity(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'POST' }
+    });
+  }
+
+  const principal = await verifyAccessJwt(request, env);
+  if (!principal?.subject) {
+    throw new ApiError(401, { error: 'access token required' });
+  }
+
+  const session = await getSessionFromRequest(request, env);
+  await ensureAccessPrincipalForUser(env, principal, session.user_id, { allowReassign: true });
+  const user = await getUserById(env, session.user_id);
+  const responseBody = {
+    ok: true,
+    user: user ? userRecordToProfile(user) : undefined
+  };
+
+  return new Response(JSON.stringify(responseBody), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
 async function handleRegisterIdentity(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
@@ -788,10 +1356,14 @@ async function handleRegisterIdentity(request: Request, env: Env): Promise<Respo
   }
 
   try {
+    const accessPrincipal = await verifyAccessJwt(request, env);
     const user = await createUser(env, raw, normalized);
+    await ensureAccessPrincipalForUser(env, accessPrincipal, user.id, { allowReassign: true });
+    const session = await issueSessionTicket(env, user.id);
     const responseBody: RegisterIdentityResponse = {
       ok: true,
-      user
+      user,
+      session
     };
     return new Response(JSON.stringify(responseBody), {
       status: 201,
@@ -812,6 +1384,52 @@ async function handleRegisterIdentity(request: Request, env: Env): Promise<Respo
   }
 }
 
+async function handleCreateSession(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    throw new ApiError(405, { error: 'Method not allowed' });
+  }
+
+  let payload: CreateSessionRequest;
+  try {
+    payload = (await request.json()) as CreateSessionRequest;
+  } catch (error) {
+    throw new ApiError(400, { error: 'Invalid JSON body' });
+  }
+
+  const userId = payload.userId?.trim();
+  if (!userId) {
+    const accessPrincipal = await verifyAccessJwt(request, env);
+    if (!accessPrincipal?.subject) {
+      throw new ApiError(400, { error: 'userId is required' });
+    }
+    const accessUser = await resolveAccessUser(env, accessPrincipal);
+    const session = await issueSessionTicket(env, accessUser.id);
+    const responseBody: CreateSessionResponse = {
+      ok: true,
+      session,
+      user: userRecordToProfile(accessUser)
+    };
+
+    return new Response(JSON.stringify(responseBody), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  await ensureSession(request, env, userId);
+
+  const session = await issueSessionTicket(env, userId);
+  const responseBody: CreateSessionResponse = {
+    ok: true,
+    session
+  };
+
+  return new Response(JSON.stringify(responseBody), {
+    status: 201,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
 async function handleAlias(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method === 'GET') {
     const match = url.pathname.match(/^\/boards\/([^/]+)\/aliases$/);
@@ -824,6 +1442,8 @@ async function handleAlias(request: Request, env: Env, url: URL): Promise<Respon
         headers: { 'Content-Type': 'application/json' }
       });
     }
+
+    await ensureSession(request, env, userId);
 
     const user = await getUserById(env, userId);
     if (!user) {
@@ -884,6 +1504,8 @@ async function handleAlias(request: Request, env: Env, url: URL): Promise<Respon
       headers: { 'Content-Type': 'application/json' }
     });
   }
+
+  await ensureSession(request, env, userId);
 
   if (aliasRaw.length < ALIAS_MIN || aliasRaw.length > ALIAS_MAX) {
     return new Response(
@@ -974,6 +1596,8 @@ async function handleUpdateReaction(
       headers: { 'Content-Type': 'application/json' }
     });
   }
+
+  await ensureSession(request, env, userId);
 
   const action = payload.action;
   if (!action || !['like', 'dislike', 'remove'].includes(action)) {
@@ -1105,6 +1729,7 @@ type UserRecord = {
   pseudonym: string;
   pseudonym_normalized: string;
   created_at: number;
+  status: 'active' | 'access_auto' | 'access_orphan';
 };
 
 type BoardAliasRecord = {
@@ -1114,6 +1739,13 @@ type BoardAliasRecord = {
   alias: string;
   alias_normalized: string;
   created_at: number;
+};
+
+type SessionRecord = {
+  token: string;
+  user_id: string;
+  created_at: number;
+  expires_at: number;
 };
 
 function formatBoardName(boardId: string) {

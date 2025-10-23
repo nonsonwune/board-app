@@ -19,6 +19,14 @@ export interface BoardPost {
   dislikeCount: number;
 }
 
+export interface SessionTicket {
+  token: string;
+  userId: string;
+  expiresAt: number;
+}
+
+export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface BoardEventPayload {
   id: string;
   event: string;
@@ -57,6 +65,7 @@ export interface RegisterIdentityRequest {
 export interface RegisterIdentityResponse {
   ok: boolean;
   user: UserProfile;
+  session: SessionTicket;
 }
 
 export interface BoardAlias {
@@ -101,4 +110,14 @@ export interface UpdateReactionResponse {
   boardId: string;
   postId: string;
   reactions: ReactionSummary;
+}
+
+export interface CreateSessionRequest {
+  userId: string;
+}
+
+export interface CreateSessionResponse {
+  ok: boolean;
+  session: SessionTicket;
+  user?: UserProfile;
 }

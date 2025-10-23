@@ -52,15 +52,17 @@
 
 ### 5.1 Identity & Profiles
 
-* **Global Pseudonym:** Unique, case‑insensitive (3–20 chars; emoji allowed). Used for Following & global leaderboards.
-* **Per‑Board Alias (optional):** Display‑only alias within a Board. Default display = alias if set; otherwise global pseudonym. Following always attaches to the global identity.
-* **Profile:** Posts across Boards (with Board flair), per‑Board Influence indicator, 30‑day global badge, follower count (no identities exposed).
+* **Global Pseudonym:** Unique, case-insensitive (3–20 chars; emoji allowed). Used for Following & global leaderboards.
+* **Per-Board Alias (optional):** Display-only alias within a Board. Default display = alias if set; otherwise global pseudonym. Following always attaches to the global identity.
+* **Access SSO:** Cloudflare Access subjects auto-provision a pseudonym on first visit; `/identity/link` lets authenticated users remap an Access subject to an existing board profile without losing history.
+* **Profile:** Posts across Boards (with Board flair), per-Board Influence indicator, 30-day global badge, follower count (no identities exposed).
 
 ### 5.2 Location & Boards
 
 * **Detection:** On startup, map GPS to H3 res9 cell; join Board covering user’s nearby cluster.
-* **Access Radius:** ~1.5 km (walkable). Feed updates when crossing boundaries.
+* **Access Radius:** Adaptive. Default to 1.5 km (walkable) but shrink to 250–500 m in dense clusters (dorm quads) and expand up to 2 km when a board has <5 fresh posts (last 2h). Apply hysteresis so users don’t see abrupt swaps while walking borders.
 * **Naming:** Official place name stored with stable `place_id` (provider‑agnostic); UI truncates display to 40 chars.
+* **Border Smoothing:** Keep last board in memory and only force swap when >60% of posts fall outside radius; show a “nearby board” preview during transitions.
 * **Creation:** First post in an uncovered cluster creates a Board; the first poster is marked **Creator** (immutable, timestamped).
 
 ### 5.3 Spaces
@@ -73,12 +75,15 @@
 * **Post:** Text ≤300 chars; 0–4 images (≤3 MB each; JPEG/PNG/WebP; EXIF stripped). Thumbnails generated on upload.
 * **Replies:** Text‑only, ≤300 chars; nested display up to 2 levels.
 * **Draft Board Lock:** Draft records originating Board; if user moves, prompt to post to original (default) or switch.
+* **Quiet Mode:** When <3 posts meet freshness criteria (≤2h), seed the board with contextual prompts (“Looks quiet…start a thread”) and lightly curated campus tips/sponsored items flagged as system content.
 
 ### 5.5 Engagement & Influence
 
 * **Reactions:** One Like or Dislike per user per item; can switch/remove. Identities not exposed to authors.
-* **Influence (per Board):** Exponential decay (half‑life 14 days) of post scores; normalized 0–1; used in topics weighting.
-* **Leaderboard (global):** 30‑day decayed roll‑up; recomputed frequently; Top‑10 receive only a **+10% tie‑breaker** in ranking.
+* **Influence (per Board):** Exponential decay (half-life 14 days) of post scores; normalized 0–1; used in topics weighting.
+* **Leaderboard (global):** 30-day decayed roll-up; recomputed frequently; Top-10 receive only a **+10% tie-breaker** in ranking.
+* **Velocity Boost:** Ranking blends Wilson score with recency/velocity — e.g., score = wilson * e^(−age/90min) + rapid-engagement bonus — so fast-moving posts surface quickly and stale items fade.
+* **Anti-Brigade Controls:** Monitor reaction entropy and dorm-level surges; dampen scores from anomalous cohorts and queue suspicious bursts for moderation review.
 
 ### 5.6 Feeds & Discovery
 
@@ -99,8 +104,10 @@
 ### 5.9 Safety & Moderation (User‑facing)
 
 * **Flagging:** Anonymous with reason; UI conveys effect (internal only).
-* **Auto‑Hide Threshold:** ≥5 **distinct** reporters → temporary hide + moderation queue; author incurs cooldown.
+* **Auto-Hide Threshold:** ≥5 **distinct** reporters → temporary hide + moderation queue; author incurs cooldown.
 * **Block/Mute:** Block hides content and prevents replies to you; mute hides content only. Reversible.
+* **Proactive Filters:** Lightweight keyword/ML gating quarantines obvious hate/harassment before first view; quarantined posts require moderator approval.
+* **Moderation Manifesto:** Moderators follow published principles—Do No Harm, Preserve Authenticity, Be Impartial, Maintain Anonymity.
 
 ### 5.10 Admin Console
 
@@ -110,6 +117,9 @@
 * **Actions:** Hide (soft), Delete (hard; two‑person confirm; auto‑restore admin‑hidden if unreviewed at 72h), Shadowban, Ban (platform/Board scope, timed), Cooldown, Thread Freeze (15 min: 5× rate‑limit + reactions off).
 * **Audit:** Immutable log of admin actions (actor, target, reason, timestamp, metadata).
 * **Brigade Panel:** Entropy of reporters, device/IP overlaps, burst timing.
+* **Realtime Alerts:** Highlight Access orphan spikes, quarantined content volume, and dead-zone triggers for ops review.
+* **Moderator Roles:** Tiered access—Level 1 volunteers vote on area reports and apply 1-hour mutes; Level 2 staff can remove content and issue 24–72h bans; Level 3 admins (rare) may reveal identities only after formal review, with audits of every lookup.
+* **Consensus Flow:** Reports enter an area queue → moderators vote keep/remove → auto-hide after 3 remove votes, auto-keep after 3 keep votes; stalemates escalate to staff within 30 minutes.
 
 ---
 
@@ -553,12 +563,17 @@ where author_bonus = 1.1 for Top‑10, else 1.0 (cap at +10%)
 * **Mobile breakpoints** — iOS Safari, Chrome Android; viewport/orientation.
 * **Offline/Weak Network** — readable errors; retries; degraded images; no data corruption.
 * **Session Handling** — token expiry, logout/login flows, preserved drafts.
+* **Location Battery Budget** — prefer significant-change geofences; GPS burst ≤10s on foreground moves; pause tracking when backgrounded >2 min.
 
 ### Observability & Alerting
 
 * **Event Logging** — all key events fire with required fields; no PII leakage.
-* **Dashboards** — DAU/WAU/MAU; flags/hour; live‑mode activations; WS downgrade; Queue lag.
-* **Alerts** — trigger on flag spikes, auto‑hide rates, WS downgrades, emergency‑delete backlog.
+  * Worker emits `access.identity_auto_provisioned`, `access.identity_linked`, `access.identity_orphaned`, and `access.identity_relinked` log events for SSO flows (JSON structured; includes `subject`, `user_id`, `timestamp`). Logpush sends these to the analytics warehouse (BigQuery) for dashboards.
+* **Dashboards** — DAU/WAU/MAU; flags/hour; live-mode activations; WS downgrade; Queue lag.
+  * Add panels for Access SSO: cumulative auto-provision, daily orphan vs relink counts, orphan backlog.
+* **Alerts** — trigger on flag spikes, auto-hide rates, WS downgrades, emergency-delete backlog.
+  * Alert if `access.identity_orphaned` exceeds 25/hour without matching relink events, or if orphan backlog grows >200.
+  * Trigger “dead-zone” alert when a board has <3 posts newer than 2h for 3 consecutive polling cycles.
 
 ### Acceptance Criteria (Go/No‑Go)
 
@@ -567,6 +582,8 @@ where author_bonus = 1.1 for Top‑10, else 1.0 (cap at +10%)
 * Privacy: Sensitive tables not directly readable; aggregates only; GPS never persisted.
 * Performance: p90/p95 targets met under expected load; realtime behaves; fallback works.
 * Accessibility: AA checks pass on representative devices.
+* Dead-zone prevention: Quiet-mode prompts render within 30s when the board is below freshness threshold; soft radius expands only when prompts have not been satisfied.
+* Border smoothing: Walking tests near board boundaries do not trigger more than one forced swap per 100 meters.
 
 ---
 
@@ -574,11 +591,16 @@ where author_bonus = 1.1 for Top‑10, else 1.0 (cap at +10%)
 
 * **Monorepo:** `apps/web` (Pages/Next.js), `apps/api` (Workers + DOs), `packages/ui`, `packages/schemas`.
 * **Wrangler Environments:** `dev`, `stage`, `prod` — separate bindings for D1, KV, R2, DO, Queues, Vectorize.
-* **Secrets & Config:** JWT keys, VAPID, Turnstile keys, Access policies. Rotated quarterly.
+* **Secrets & Config:** JWT keys, VAPID, Turnstile keys, Access policies (Access audience/issuer/JWKS). Rotated quarterly.
 * **Pages Pipelines:** PR preview → stage promotion → prod; synthetic checks gate prod.
-* **Migrations:** D1 migrations tracked and versioned; dry‑run against dev/stage before prod.
-* **Feature Flags:** KV‑based; evaluated at edge.
+* **Migrations:** D1 migrations tracked and versioned; dry-run against dev/stage before prod.
+* **Feature Flags:** KV-based; evaluated at edge.
 * **SLOs:** p90 feed <1.5s, realtime p95 <1s, 99.9% API availability, Queue lag <2 min p95.
+* **Launch Cadence:** Sequence rollout dorm-by-dorm (~200 users). Gather retention/bug data for each community before expanding radius to the next.
+* **Phased Launch Goals:**
+  * Phase 1 (MVP) — single dorm, fixed radius, text-only posts, manual moderation, success metrics: activation, posts/user/day, D2/D7 retention.
+  * Phase 2 (Growth) — unlock adaptive radius, topics, sponsored quiet-mode cards, volunteer moderation.
+  * Phase 3 (Scale) — image posts, peek feature, paid pins, ambassador program.
 
 ---
 

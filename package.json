@@ -9,7 +9,8 @@
     "lint": "pnpm run --recursive lint",
     "test": "pnpm run --recursive test --if-present",
     "lint:fix": "pnpm run --recursive lint --if-present -- --fix",
-    "smoke:ws": "tsx scripts/ws-smoke-test.ts"
+    "smoke:ws": "tsx scripts/ws-smoke-test.ts",
+    "ci": "pnpm --filter @board-app/workers test -- --run && pnpm --filter @board-app/frontend test:e2e"
   },
   "devDependencies": {
     "tsx": "^4.7.1",

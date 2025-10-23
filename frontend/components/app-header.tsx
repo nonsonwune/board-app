@@ -1,14 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import NextLink from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import { Menu, X } from 'lucide-react';
 import { useIdentityContext } from '../context/identity-context';
 
 export default function AppHeader() {
   const pathname = usePathname();
-  const { identity } = useIdentityContext();
+  const router = useRouter();
+  const { identity, hydrated, setIdentity, setSession } = useIdentityContext();
   const [menuOpen, setMenuOpen] = useState(false);
 
   const navItems = [
@@ -19,37 +20,50 @@ export default function AppHeader() {
   const renderLink = (item: (typeof navItems)[number]) => {
     const active = pathname === item.href || (item.href !== '/' && pathname?.startsWith(item.href));
     return (
-      <Link
+      <NextLink
         key={item.href}
         href={item.href}
         onClick={() => setMenuOpen(false)}
         className={`rounded-md px-3 py-1 transition ${active ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/80'}`}
       >
         {item.label}
-      </Link>
+      </NextLink>
     );
   };
 
   return (
     <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur supports-[backdrop-filter]:bg-slate-950/60">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-4 text-slate-200 sm:px-6">
-        <Link href="/" className="text-lg font-semibold text-white">
+        <NextLink href="/" className="text-lg font-semibold text-white">
           Board Rooms
-        </Link>
+        </NextLink>
         <nav className="hidden items-center gap-4 text-sm md:flex">{navItems.map(renderLink)}</nav>
         <div className="hidden text-right text-xs text-slate-400 md:block">
-          {identity ? (
-            <>
+          {!hydrated && <span className="text-slate-500">Loading identity…</span>}
+          {hydrated && identity && (
+            <div className="flex flex-col items-end gap-1">
               <p className="font-medium text-slate-200">{identity.pseudonym}</p>
               <p className="font-mono text-[11px] text-slate-500">{identity.id}</p>
-            </>
-          ) : (
-            <Link
+              <button
+                type="button"
+                onClick={() => {
+                  setIdentity(null);
+                  setSession(null);
+                  router.push('/profile');
+                }}
+                className="rounded-md border border-rose-500/40 px-3 py-1 text-[11px] uppercase tracking-[2px] text-rose-300 transition hover:border-rose-400 hover:text-rose-200"
+              >
+                Log out
+              </button>
+            </div>
+          )}
+          {hydrated && !identity && (
+            <NextLink
               href="/profile"
               className="rounded-md border border-slate-700 px-3 py-1 text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
             >
               Register identity →
-            </Link>
+            </NextLink>
           )}
         </div>
         <button
@@ -65,19 +79,33 @@ export default function AppHeader() {
         <div className="border-t border-slate-800 bg-slate-950/95 px-4 pb-4 text-sm text-slate-200 md:hidden">
           <div className="flex flex-col gap-2 py-3">{navItems.map(renderLink)}</div>
           <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-400">
-            {identity ? (
-              <>
+            {!hydrated && <span className="text-slate-500">Loading identity…</span>}
+            {hydrated && identity && (
+              <div className="flex flex-col gap-1">
                 <p className="font-medium text-slate-200">{identity.pseudonym}</p>
                 <p className="font-mono text-[11px] text-slate-500">{identity.id}</p>
-              </>
-            ) : (
-              <Link
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIdentity(null);
+                    setSession(null);
+                    setMenuOpen(false);
+                    router.push('/profile');
+                  }}
+                  className="rounded-md border border-rose-500/40 px-2 py-1 text-[11px] uppercase tracking-[2px] text-rose-300 transition hover:border-rose-400 hover:text-rose-200"
+                >
+                  Log out
+                </button>
+              </div>
+            )}
+            {hydrated && !identity && (
+              <NextLink
                 href="/profile"
                 onClick={() => setMenuOpen(false)}
                 className="text-slate-300 underline-offset-4 hover:text-sky-300 hover:underline"
               >
                 Register identity to manage aliases
-              </Link>
+              </NextLink>
             )}
           </div>
         </div>

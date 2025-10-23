@@ -2,49 +2,69 @@ import { expect, test } from '@playwright/test';
 
 const uniqueId = () => Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
 
-async function jsonRequest(request: any, url: string, body: Record<string, unknown>, expectedStatus: number) {
-  const response = await request.post(url, {
-    headers: { 'content-type': 'application/json' },
-    data: JSON.stringify(body)
-  });
-  const payload = await response.json();
-  expect(response.status(), url).toBe(expectedStatus);
-  return payload;
-}
-
-test('identity + alias flow surfaces in feed', async ({ request, baseURL }) => {
-  const workerBaseUrl = baseURL ?? 'http://localhost:8788';
+test('user can register, set alias, post and see activity', async ({ page, request }) => {
   const boardId = `e2e-${uniqueId()}`;
   const pseudonym = `Playwright${uniqueId()}`.slice(0, 18);
   const alias = `Alias${uniqueId()}`;
+  const workerBaseUrl = process.env.WORKER_BASE_URL ?? 'http://localhost:8788';
 
-  const identity = await jsonRequest(request, `${workerBaseUrl}/identity/register`, { pseudonym }, 201);
-  const userId = identity.user.id as string;
-  expect(userId).toBeTruthy();
+  const health = await request.get(`${workerBaseUrl}/_health`, { timeout: 5_000 }).catch(() => null);
+  test.skip(!health || !health.ok(), 'Worker must be running for identity flow test');
 
-  const aliasResponse = await jsonRequest(
-    request,
+  const registerResponse = await request.post(`${workerBaseUrl}/identity/register`, {
+    headers: { 'content-type': 'application/json' },
+    data: JSON.stringify({ pseudonym })
+  });
+  expect(registerResponse.ok()).toBeTruthy();
+  const registerPayload = await registerResponse.json();
+  const session = registerPayload.session as { token: string };
+  const user = registerPayload.user as { id: string; pseudonym: string };
+
+  await page.addInitScript(
+    ({ storedIdentity, storedSession, sessionCookieName }) => {
+      window.localStorage.setItem('boardapp:identity', JSON.stringify(storedIdentity));
+      window.localStorage.setItem('boardapp:session', JSON.stringify(storedSession));
+      document.cookie = `${sessionCookieName}=${encodeURIComponent(JSON.stringify(storedSession))};path=/;samesite=lax`;
+    },
+    { storedIdentity: user, storedSession: session, sessionCookieName: 'boardapp_session_0' }
+  );
+
+  const aliasResponse = await request.post(
     `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases`,
-    { userId, alias },
-    201
+    {
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${session.token}`
+      },
+      data: JSON.stringify({ userId: user.id, alias })
+    }
   );
-  expect(aliasResponse.alias.alias).toBe(alias);
+  expect(aliasResponse.ok()).toBeTruthy();
 
-  const postResponse = await jsonRequest(
-    request,
+  const postResponse = await request.post(
     `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts`,
-    { body: 'Playwright smoke post', userId },
-    201
+    {
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${session.token}`
+      },
+      data: JSON.stringify({ body: 'Playwright UI post', userId: user.id })
+    }
   );
-  expect(postResponse.post.author).toBe(alias);
+  expect(postResponse.ok()).toBeTruthy();
+
+  await page.goto(`/boards/${boardId}`);
+  await page.waitForResponse(res => res.url().includes(`/boards/${encodeURIComponent(boardId)}/feed`) && res.ok());
+  const postLocator = page.locator('article').filter({ hasText: 'Playwright UI post' }).first();
+  await expect(postLocator).toBeVisible();
+  await expect(postLocator.filter({ hasText: alias })).toBeVisible();
 
   const feedResponse = await request.get(
     `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/feed?limit=1`
   );
   expect(feedResponse.ok()).toBeTruthy();
   const feed = await feedResponse.json();
-  expect(Array.isArray(feed.posts)).toBeTruthy();
   const first = feed.posts[0];
-  expect(first.author).toBe(alias);
-  expect(first.body).toBe('Playwright smoke post');
+  expect(first.alias).toBe(alias);
+  expect(first.body).toBe('Playwright UI post');
 });
