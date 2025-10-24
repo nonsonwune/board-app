@@ -30,7 +30,10 @@ export default function BottomNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-surface/95 backdrop-blur supports-[backdrop-filter]:bg-surface/80">
+    <nav
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-surface/95 backdrop-blur supports-[backdrop-filter]:bg-surface/80 md:hidden"
+      aria-label="Primary navigation"
+    >
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-2.5 sm:px-6">
         {NAV_ITEMS.map(item => {
           const active = isActivePath(pathname, item.href);

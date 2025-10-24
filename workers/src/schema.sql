@@ -7,7 +7,18 @@ CREATE TABLE IF NOT EXISTS boards (
   radius_state TEXT,
   radius_updated_at INTEGER,
   phase_mode TEXT NOT NULL DEFAULT 'default',
-  text_only INTEGER NOT NULL DEFAULT 0
+  text_only INTEGER NOT NULL DEFAULT 0,
+  latitude REAL,
+  longitude REAL
+);
+CREATE TABLE IF NOT EXISTS board_metrics (
+  board_id TEXT PRIMARY KEY REFERENCES boards(id) ON DELETE CASCADE,
+  snapshot_at INTEGER NOT NULL,
+  active_connections INTEGER NOT NULL DEFAULT 0,
+  posts_last_hour INTEGER NOT NULL DEFAULT 0,
+  posts_last_day INTEGER NOT NULL DEFAULT 0,
+  posts_prev_day INTEGER NOT NULL DEFAULT 0,
+  last_post_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS posts (
   id TEXT PRIMARY KEY,

@@ -3,6 +3,7 @@ import { BoardRoom, type BoardWebSocket } from './board-room';
 import type {
   BoardEventPayload,
   BoardFeedResponse,
+  BoardCatalogResponse,
   BoardPost as SharedBoardPost,
   BoardSummary,
   BoardSpace,
@@ -71,6 +72,14 @@ const ADAPTIVE_RADIUS_STALE_THRESHOLD = 4;
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_IMAGE_COUNT = 4;
 const MAX_IMAGE_SIZE_BYTES = 3 * 1024 * 1024; // 3 MB
+const BOARD_METRICS_STALE_MS = 5 * 60 * 1000;
+const SESSION_COOKIE_NAME = 'boardapp_session_0';
+
+const DEFAULT_BOARD_COORDS: Record<string, { latitude: number; longitude: number }> = {
+  'demo-board': { latitude: 37.7749, longitude: -122.4194 },
+  'campus-north': { latitude: 40.1036, longitude: -88.2272 },
+  'smoke-board': { latitude: 34.0522, longitude: -118.2437 }
+};
 
 
 const textEncoder = new TextEncoder();
@@ -96,6 +105,30 @@ function parseBoardList(value?: string): Set<string> {
     .map(entry => normalizeBoardId(entry))
     .filter(entry => entry.length > 0);
   return new Set(entries);
+}
+
+function parseCookies(header: string | null): Record<string, string> {
+  if (!header) return {};
+  return header.split(';').reduce<Record<string, string>>((acc, part) => {
+    const [key, ...rest] = part.trim().split('=');
+    if (!key) return acc;
+    acc[key] = rest.join('=').trim();
+    return acc;
+  }, {});
+}
+
+function getSessionTokenFromRequest(request: Request): string | null {
+  const auth = request.headers.get('Authorization');
+  if (auth && auth.startsWith('Bearer ')) {
+    const token = auth.slice(7).trim();
+    if (token) {
+      return token;
+    }
+  }
+
+  const cookies = parseCookies(request.headers.get('Cookie'));
+  const cookieToken = cookies[SESSION_COOKIE_NAME];
+  return cookieToken ? cookieToken : null;
 }
 
 
@@ -172,17 +205,6 @@ interface UserAccessLink {
   email: string | null;
 }
 
-interface AccessIdentityEvent {
-  id: string;
-  eventType: string;
-  subject: string;
-  userId: string | null;
-  email: string | null;
-  traceId: string | null;
-  metadata: Record<string, unknown> | null;
-  createdAt: number;
-}
-
 class ApiError extends Error {
   status: number;
   body: Record<string, unknown>;
@@ -252,12 +274,12 @@ function base64UrlToBase64(input: string) {
   return padded.replace(/-/g, '+').replace(/_/g, '/');
 }
 
-function decodeJwtSegment(segment: string): any {
+function decodeJwtSegment(segment: string): unknown {
   const base64 = base64UrlToBase64(segment);
   try {
     const json = atob(base64);
     return JSON.parse(json);
-  } catch (error) {
+  } catch {
     throw new ApiError(401, { error: 'invalid access token' });
   }
 }
@@ -338,7 +360,7 @@ async function fetchJwks(config: AccessJwtConfig): Promise<JsonWebKey[]> {
   let body: { keys?: JsonWebKey[] };
   try {
     body = (await res.json()) as { keys?: JsonWebKey[] };
-  } catch (error) {
+  } catch {
     throw new ApiError(500, { error: 'invalid access keys response' });
   }
   if (!Array.isArray(body.keys) || body.keys.length === 0) {
@@ -482,14 +504,16 @@ async function ensureSchema(env: Env) {
         `ALTER TABLE boards ADD COLUMN radius_state TEXT`,
         `ALTER TABLE boards ADD COLUMN radius_updated_at INTEGER`,
         `ALTER TABLE boards ADD COLUMN phase_mode TEXT NOT NULL DEFAULT 'default'`,
-        `ALTER TABLE boards ADD COLUMN text_only INTEGER NOT NULL DEFAULT 0`
+        `ALTER TABLE boards ADD COLUMN text_only INTEGER NOT NULL DEFAULT 0`,
+        `ALTER TABLE boards ADD COLUMN latitude REAL`,
+        `ALTER TABLE boards ADD COLUMN longitude REAL`
       ];
 
       for (const sql of alterStatements) {
         try {
           await env.BOARD_DB.prepare(sql).run();
-        } catch (error: any) {
-          const message = String(error?.message ?? '');
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
           if (/duplicate column name/i.test(message)) {
             continue;
           }
@@ -539,22 +563,45 @@ async function persistEvent(env: Env, record: BoardEventPayload, boardId: string
 async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord> {
   await ensureSchema(env);
   const existing = await env.BOARD_DB.prepare(
-    'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only FROM boards WHERE id = ?1'
+    'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only, latitude, longitude FROM boards WHERE id = ?1'
   )
     .bind(boardId)
     .first<BoardRecord>();
 
   if (existing) {
+    const normalizedId = normalizeBoardId(boardId);
+    const defaultLocation = DEFAULT_BOARD_COORDS[normalizedId];
+    if (defaultLocation && (existing.latitude == null || existing.longitude == null)) {
+      await env.BOARD_DB.prepare('UPDATE boards SET latitude = ?1, longitude = ?2 WHERE id = ?3')
+        .bind(defaultLocation.latitude, defaultLocation.longitude, boardId)
+        .run();
+      existing.latitude = defaultLocation.latitude;
+      existing.longitude = defaultLocation.longitude;
+    }
     return existing;
   }
 
   const createdAt = Date.now();
   const displayName = formatBoardName(boardId);
   const radiusState: RadiusState = { currentMeters: 1500, lastExpandedAt: null, lastContractedAt: null };
+  const defaultLocation = DEFAULT_BOARD_COORDS[normalizeBoardId(boardId)] ?? null;
+
   await env.BOARD_DB.prepare(
-    'INSERT INTO boards (id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)'
+    'INSERT INTO boards (id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only, latitude, longitude) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)'
   )
-    .bind(boardId, displayName, null, createdAt, radiusState.currentMeters, JSON.stringify(radiusState), createdAt, 'default', 0)
+    .bind(
+      boardId,
+      displayName,
+      null,
+      createdAt,
+      radiusState.currentMeters,
+      JSON.stringify(radiusState),
+      createdAt,
+      'default',
+      0,
+      defaultLocation?.latitude ?? null,
+      defaultLocation?.longitude ?? null
+    )
     .run();
 
   return {
@@ -566,7 +613,9 @@ async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord>
     radius_state: JSON.stringify(radiusState),
     radius_updated_at: createdAt,
     phase_mode: 'default',
-    text_only: 0
+    text_only: 0,
+    latitude: defaultLocation?.latitude ?? null,
+    longitude: defaultLocation?.longitude ?? null
   };
 }
 
@@ -948,6 +997,176 @@ async function listFollowingPosts(
   return { posts, cursor: nextCursor, hasMore };
 }
 
+async function computeBoardMetrics(env: Env, board: BoardRecord, now: number): Promise<BoardMetricsSnapshot> {
+  const hourAgo = now - 60 * 60 * 1000;
+  const dayAgo = now - 24 * 60 * 60 * 1000;
+  const twoDaysAgo = now - 48 * 60 * 60 * 1000;
+
+  const stats = await env.BOARD_DB.prepare(
+    `SELECT
+        SUM(CASE WHEN created_at >= ?2 THEN 1 ELSE 0 END) AS posts_last_hour,
+        SUM(CASE WHEN created_at >= ?3 THEN 1 ELSE 0 END) AS posts_last_day,
+        SUM(CASE WHEN created_at >= ?4 AND created_at < ?3 THEN 1 ELSE 0 END) AS posts_prev_day,
+        MAX(created_at) AS last_post_at
+       FROM posts
+       WHERE board_id = ?1`
+  )
+    .bind(board.id, hourAgo, dayAgo, twoDaysAgo)
+    .first<{
+      posts_last_hour: number | null;
+      posts_last_day: number | null;
+      posts_prev_day: number | null;
+      last_post_at: number | null;
+    }>();
+
+  const room = boardRooms.get(board.id);
+  const activeConnections = room?.getConnectionCount() ?? 0;
+
+  return {
+    boardId: board.id,
+    snapshotAt: now,
+    activeConnections,
+    postsLastHour: stats?.posts_last_hour ?? 0,
+    postsLastDay: stats?.posts_last_day ?? 0,
+    postsPrevDay: stats?.posts_prev_day ?? 0,
+    lastPostAt: stats?.last_post_at ?? null
+  };
+}
+
+async function upsertBoardMetrics(env: Env, snapshot: BoardMetricsSnapshot): Promise<void> {
+  await env.BOARD_DB.prepare(
+    `INSERT INTO board_metrics (
+        board_id,
+        snapshot_at,
+        active_connections,
+        posts_last_hour,
+        posts_last_day,
+        posts_prev_day,
+        last_post_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      ON CONFLICT(board_id) DO UPDATE SET
+        snapshot_at = excluded.snapshot_at,
+        active_connections = excluded.active_connections,
+        posts_last_hour = excluded.posts_last_hour,
+        posts_last_day = excluded.posts_last_day,
+        posts_prev_day = excluded.posts_prev_day,
+        last_post_at = excluded.last_post_at`
+  )
+    .bind(
+      snapshot.boardId,
+      snapshot.snapshotAt,
+      snapshot.activeConnections,
+      snapshot.postsLastHour,
+      snapshot.postsLastDay,
+      snapshot.postsPrevDay,
+      snapshot.lastPostAt
+    )
+    .run();
+}
+
+async function snapshotBoardMetrics(env: Env, options: { now?: number } = {}): Promise<void> {
+  await ensureSchema(env);
+  const now = options.now ?? Date.now();
+  const { results } = await env.BOARD_DB.prepare(
+    'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only FROM boards'
+  ).all<BoardRecord>();
+  const boards = results ?? [];
+
+  for (const board of boards) {
+    const snapshot = await computeBoardMetrics(env, board, now);
+    await upsertBoardMetrics(env, snapshot);
+  }
+}
+
+async function listBoardsCatalog(env: Env, options: { limit?: number } = {}): Promise<BoardSummary[]> {
+  await ensureSchema(env);
+  const limitRaw = options.limit ?? 12;
+  const limit = Math.max(1, Math.min(limitRaw, 50));
+  const { results } = await env.BOARD_DB.prepare(
+    `SELECT
+        id,
+        display_name,
+        description,
+        created_at,
+        radius_meters,
+        radius_updated_at,
+        phase_mode,
+        text_only
+      FROM boards
+      ORDER BY created_at ASC
+      LIMIT ?1`
+  )
+    .bind(limit)
+    .all<BoardRecord>();
+
+  const rows = results ?? [];
+  const now = Date.now();
+
+  const enriched = await Promise.all(
+    rows.map(async record => {
+      const boardId = record.id;
+      const metricsRow = await env.BOARD_DB.prepare(
+        `SELECT board_id, snapshot_at, active_connections, posts_last_hour, posts_last_day, posts_prev_day, last_post_at
+           FROM board_metrics
+          WHERE board_id = ?1`
+      )
+        .bind(boardId)
+        .first<BoardMetricsRow>();
+
+      let snapshot: BoardMetricsSnapshot | null = metricsRow
+        ? {
+            boardId: metricsRow.board_id,
+            snapshotAt: metricsRow.snapshot_at,
+            activeConnections: metricsRow.active_connections,
+            postsLastHour: metricsRow.posts_last_hour,
+            postsLastDay: metricsRow.posts_last_day,
+            postsPrevDay: metricsRow.posts_prev_day,
+            lastPostAt: metricsRow.last_post_at ?? null
+          }
+        : null;
+
+      if (!snapshot || now - snapshot.snapshotAt > BOARD_METRICS_STALE_MS) {
+        snapshot = await computeBoardMetrics(env, record, now);
+        await upsertBoardMetrics(env, snapshot);
+      }
+
+      const liveConnections = boardRooms.get(boardId)?.getConnectionCount();
+      const activeConnections = liveConnections ?? snapshot.activeConnections;
+      const postsLastDay = snapshot.postsLastDay;
+      const postsPrevDay = snapshot.postsPrevDay;
+      const trend = postsPrevDay > 0
+        ? ((postsLastDay - postsPrevDay) / postsPrevDay) * 100
+        : postsLastDay > 0
+          ? 100
+          : null;
+
+      const radiusMeters = record.radius_meters ?? undefined;
+      const radiusLabel = radiusMeters ? `${Math.round(radiusMeters).toLocaleString()} m radius` : null;
+
+      return {
+        id: boardId,
+        displayName: record.display_name,
+        description: record.description,
+        createdAt: record.created_at,
+        radiusMeters,
+        radiusUpdatedAt: record.radius_updated_at ?? null,
+        phaseMode: record.phase_mode === 'phase1' ? 'phase1' : 'default',
+        textOnly: Boolean(record.text_only),
+        activeConnections,
+        postsLastHour: snapshot.postsLastHour,
+        postsLastDay,
+        postsTrend24Hr: trend,
+        radiusLabel,
+        lastPostAt: snapshot.lastPostAt,
+        latitude: record.latitude ?? null,
+        longitude: record.longitude ?? null
+      } satisfies BoardSummary;
+    })
+  );
+
+  return enriched;
+}
+
 async function searchBoardPosts(
   env: Env,
   options: {
@@ -1121,6 +1340,11 @@ async function getSessionByToken(env: Env, token: string): Promise<SessionRecord
   }
 
   return record;
+}
+
+async function deleteSessionByToken(env: Env, token: string): Promise<void> {
+  await ensureSchema(env);
+  await env.BOARD_DB.prepare('DELETE FROM sessions WHERE token = ?1').bind(token).run();
 }
 
 async function getSessionFromRequest(request: Request, env: Env): Promise<SessionRecord> {
@@ -1836,9 +2060,17 @@ export default {
         return withCors(request, await handleLinkIdentity(request, env));
       }
 
+      if (url.pathname === '/identity/logout') {
+        return withCors(request, await handleLogout(request, env));
+      }
+
       const upgradeHeader = request.headers.get('Upgrade');
       if (url.pathname === '/boards' && upgradeHeader === 'websocket') {
         return handleWebsocket(request, env, ctx, url);
+      }
+
+      if (url.pathname === '/boards/catalog') {
+        return withCors(request, await handleBoardsCatalog(request, env, url));
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/phase$/)) {
@@ -1903,7 +2135,7 @@ export default {
       }
 
       return withCors(request, new Response('Not Found', { status: 404 }));
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (error instanceof ApiError) {
         return withCors(
           request,
@@ -1923,7 +2155,7 @@ export default {
       );
     }
   },
-  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledController, env: Env): Promise<void> {
     const runTraceId = crypto.randomUUID();
     const scheduledTime = typeof event.scheduledTime === 'number' ? event.scheduledTime : Date.now();
     try {
@@ -1939,8 +2171,10 @@ export default {
           cron: typeof event.cron === 'string' ? event.cron : null
         })
       );
+
+      await snapshotBoardMetrics(env, { now: scheduledTime });
     } catch (error) {
-      console.error('[worker] dead zone scheduled failure', error);
+      console.error('[worker] scheduled maintenance failure', error);
       if (typeof event.noRetry === 'function') {
         event.noRetry();
       }
@@ -1959,8 +2193,10 @@ export {
   getOrCreateBoard,
   createPost,
   listPosts,
+  listBoardsCatalog,
   listUserPosts,
   listFollowingPosts,
+  snapshotBoardMetrics,
   searchBoardPosts,
   persistEvent,
   createUser,
@@ -2021,10 +2257,10 @@ async function handleEvents(request: Request, env: Env, ctx: ExecutionContext, u
   const stub = env.BOARD_ROOM_DO.get(durableId);
 
   if (request.method === 'POST') {
-    let payload: any;
+    let payload: unknown;
     try {
       payload = await request.json();
-    } catch (error) {
+    } catch {
       return withCors(
         request,
         new Response(JSON.stringify({ error: 'Invalid JSON body', trace_id: traceId }), {
@@ -2152,7 +2388,7 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
   let payload: CreatePostRequest;
   try {
     payload = (await request.json()) as CreatePostRequest;
-  } catch (error) {
+  } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body', trace_id: traceId }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
@@ -2190,9 +2426,7 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
   const board = await getOrCreateBoard(env, boardId);
   const phaseConfig = getPhaseOneConfig(env);
   const normalizedBoardId = normalizeBoardId(boardId);
-  const boardPhaseMode = board.phase_mode === 'phase1';
   const boardTextOnly = Boolean(board.text_only);
-  const isPhaseOne = boardPhaseMode || phaseConfig.boards.has(normalizedBoardId);
   const isTextOnly = boardTextOnly || phaseConfig.textOnlyBoards.has(normalizedBoardId);
   const uploadsEnabled = isImageUploadsEnabled(env);
   const rawImages = Array.isArray(payload.images) ? (payload.images as PostImageDraft[]) : [];
@@ -2442,6 +2676,36 @@ async function handleLinkIdentity(request: Request, env: Env): Promise<Response>
   });
 }
 
+async function handleLogout(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'POST' }
+    });
+  }
+
+  const token = getSessionTokenFromRequest(request);
+  if (!token) {
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': `${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax`
+      }
+    });
+  }
+
+  await deleteSessionByToken(env, token);
+
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Set-Cookie': `${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax`
+    }
+  });
+}
+
 async function handleRegisterIdentity(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
@@ -2453,7 +2717,7 @@ async function handleRegisterIdentity(request: Request, env: Env): Promise<Respo
   let payload: RegisterIdentityRequest;
   try {
     payload = (await request.json()) as RegisterIdentityRequest;
-  } catch (error) {
+  } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
@@ -2525,7 +2789,7 @@ async function handleCreateSession(request: Request, env: Env): Promise<Response
   let payload: CreateSessionRequest;
   try {
     payload = (await request.json()) as CreateSessionRequest;
-  } catch (error) {
+  } catch {
     throw new ApiError(400, { error: 'Invalid JSON body' });
   }
 
@@ -2601,17 +2865,26 @@ async function handlePhaseSettings(request: Request, env: Env, url: URL): Promis
     });
   }
 
-  let payload: any;
+  let payloadRaw: unknown;
   try {
-    payload = await request.json();
+    payloadRaw = await request.json();
   } catch {
     throw new ApiError(400, { error: 'invalid JSON payload' });
   }
 
-  const phaseMode = payload?.phaseMode === 'phase1' ? 'phase1' : 'default';
-  const textOnly = Boolean(payload?.textOnly);
-  const radiusInput = Number(payload?.radiusMeters);
+  const payload =
+    typeof payloadRaw === 'object' && payloadRaw !== null
+      ? (payloadRaw as Record<string, unknown>)
+      : {};
+
+  const phaseMode = payload['phaseMode'] === 'phase1' ? 'phase1' : 'default';
+  const textOnly = Boolean(payload['textOnly']);
+  const radiusInput = Number(payload['radiusMeters']);
   const requestedRadius = Number.isFinite(radiusInput) && radiusInput > 0 ? Math.max(250, Math.min(radiusInput, 5000)) : null;
+  const latitudeInput = Number(payload['latitude']);
+  const hasLatitude = Number.isFinite(latitudeInput);
+  const longitudeInput = Number(payload['longitude']);
+  const hasLongitude = Number.isFinite(longitudeInput);
 
   const nextRadiusMeters = phaseMode === 'phase1'
     ? requestedRadius ?? existingState?.currentMeters ?? board.radius_meters ?? 1500
@@ -2636,10 +2909,21 @@ async function handlePhaseSettings(request: Request, env: Env, url: URL): Promis
             text_only = ?2,
             radius_meters = ?3,
             radius_state = ?4,
-            radius_updated_at = ?5
-      WHERE id = ?6`
+            radius_updated_at = ?5,
+            latitude = COALESCE(?6, latitude),
+            longitude = COALESCE(?7, longitude)
+      WHERE id = ?8`
   )
-    .bind(phaseMode, textOnly ? 1 : 0, nextRadiusMeters, JSON.stringify(nextRadiusState), now, boardId)
+    .bind(
+      phaseMode,
+      textOnly ? 1 : 0,
+      nextRadiusMeters,
+      JSON.stringify(nextRadiusState),
+      now,
+      hasLatitude ? latitudeInput : null,
+      hasLongitude ? longitudeInput : null,
+      boardId
+    )
     .run();
 
   board.phase_mode = phaseMode;
@@ -2647,13 +2931,21 @@ async function handlePhaseSettings(request: Request, env: Env, url: URL): Promis
   board.radius_meters = nextRadiusMeters;
   board.radius_state = JSON.stringify(nextRadiusState);
   board.radius_updated_at = now;
+  if (hasLatitude) {
+    board.latitude = latitudeInput;
+  }
+  if (hasLongitude) {
+    board.longitude = longitudeInput;
+  }
 
   return new Response(
     JSON.stringify({
       boardId,
       phaseMode,
       textOnly,
-      radiusMeters: nextRadiusMeters
+      radiusMeters: nextRadiusMeters,
+      latitude: board.latitude ?? null,
+      longitude: board.longitude ?? null
     }),
     {
       status: 200,
@@ -2721,7 +3013,7 @@ async function handleAlias(request: Request, env: Env, url: URL): Promise<Respon
   let payload: UpsertAliasRequest;
   try {
     payload = (await request.json()) as UpsertAliasRequest;
-  } catch (error) {
+  } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
@@ -2814,7 +3106,7 @@ async function handleUpdateReaction(
   let payload: UpdateReactionRequest;
   try {
     payload = (await request.json()) as UpdateReactionRequest;
-  } catch (error) {
+  } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body', trace_id: traceId }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
@@ -2967,6 +3259,28 @@ async function handleFollowingFeed(request: Request, env: Env, url: URL): Promis
     posts: feed.posts,
     cursor: feed.cursor,
     hasMore: feed.hasMore
+  };
+
+  return new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function handleBoardsCatalog(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== 'GET') {
+    return new Response(JSON.stringify({ error: 'method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'GET' }
+    });
+  }
+
+  const limitParam = Number(url.searchParams.get('limit') ?? '12');
+  const limit = Number.isFinite(limitParam) ? limitParam : 12;
+  const boards = await listBoardsCatalog(env, { limit });
+  const response: BoardCatalogResponse = {
+    ok: true,
+    boards
   };
 
   return new Response(JSON.stringify(response), {
@@ -3182,7 +3496,9 @@ async function handleFeed(request: Request, env: Env, url: URL): Promise<Respons
       radiusMeters: board.radius_meters ?? adaptiveState.currentMeters,
       radiusUpdatedAt: board.radius_updated_at ?? null,
       phaseMode: isPhaseOne ? 'phase1' : 'default',
-      textOnly: isTextOnly
+      textOnly: isTextOnly,
+      latitude: board.latitude ?? null,
+      longitude: board.longitude ?? null
     },
     posts,
     realtimeConnections: room?.getConnectionCount() ?? 0,
@@ -3207,7 +3523,29 @@ type BoardRecord = {
   radius_updated_at: number | null;
   phase_mode: string | null;
   text_only: number | null;
+  latitude: number | null;
+  longitude: number | null;
 };
+
+type BoardMetricsRow = {
+  board_id: string;
+  snapshot_at: number;
+  active_connections: number;
+  posts_last_hour: number;
+  posts_last_day: number;
+  posts_prev_day: number;
+  last_post_at: number | null;
+};
+
+interface BoardMetricsSnapshot {
+  boardId: string;
+  snapshotAt: number;
+  activeConnections: number;
+  postsLastHour: number;
+  postsLastDay: number;
+  postsPrevDay: number;
+  lastPostAt: number | null;
+}
 
 type ReplyRow = {
   id: string;
@@ -3363,26 +3701,32 @@ export class BoardRoomDO {
     }
 
     if (request.method === 'POST' && url.pathname === '/broadcast') {
-      let payload: any;
+      let rawPayload: unknown;
       try {
-        payload = await request.json();
-      } catch (error) {
+        rawPayload = await request.json();
+      } catch {
         return new Response(JSON.stringify({ error: 'Invalid JSON payload', trace_id: traceId }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' }
         });
       }
 
-      const eventName = typeof payload?.event === 'string' && payload.event.trim() ? payload.event.trim() : 'message';
-      const timestamp = Date.now();
-      const record: BoardEventRecord = {
-        id: crypto.randomUUID(),
-        boardId,
-        event: eventName,
-        data: payload?.data ?? null,
-        traceId,
-        timestamp
-      };
+    const payload =
+      typeof rawPayload === 'object' && rawPayload !== null
+        ? (rawPayload as Record<string, unknown>)
+        : {};
+
+    const eventField = payload['event'];
+    const eventName = typeof eventField === 'string' && eventField.trim() ? eventField.trim() : 'message';
+    const timestamp = Date.now();
+    const record: BoardEventRecord = {
+      id: crypto.randomUUID(),
+      boardId,
+      event: eventName,
+      data: payload['data'] ?? null,
+      traceId,
+      timestamp
+    };
 
       await this.appendEvent(record);
 

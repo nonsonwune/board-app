@@ -7,7 +7,6 @@ import IdentityPanel from '../../components/identity-panel';
 import PostCard from '../../components/feed/post-card';
 import { PageShell, PageHeader } from '../../components/page-shell';
 import { useIdentityContext } from '../../context/identity-context';
-import { useToast } from '../../components/toast-provider';
 import { formatBoardName } from '../../lib/board';
 import { useRouter } from 'next/navigation';
 
@@ -50,7 +49,6 @@ function createHttpError(message: string, status?: number): HttpError {
 export default function ProfilePage() {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
   const { identity, session, refreshSession, setSession } = useIdentityContext();
-  const { addToast } = useToast();
   const router = useRouter();
 
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
@@ -121,13 +119,6 @@ export default function ProfilePage() {
 
   const handleRefresh = () => fetchProfile();
 
-  const disabledAction = useCallback(() => {
-    addToast({
-      title: 'Open board to interact',
-      description: 'Visit the board to react or reply to this post.'
-    });
-  }, [addToast]);
-
   return (
     <PageShell>
       <div className="space-y-8">
@@ -156,7 +147,7 @@ export default function ProfilePage() {
             <p className="mt-2">Once registered, you can set board-specific aliases and track your influence.</p>
             <button
               type="button"
-              onClick={() => router.push('/boards/campus-quad')}
+              onClick={() => router.push('/')}
               className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-white transition hover:bg-primary-light"
             >
               Explore boards
@@ -200,7 +191,7 @@ export default function ProfilePage() {
               )}
             </section>
 
-            <section className="rounded-2xl border border-border/70 bg-surface p-6 shadow-sm">
+            <section id="aliases" className="rounded-2xl border border-border/70 bg-surface p-6 shadow-sm">
               <h3 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Board aliases</h3>
               <p className="mt-1 text-xs text-text-secondary">
                 Customize how you appear on each board. Aliases help local communities recognize you without revealing your global pseudonym.
@@ -232,16 +223,33 @@ export default function ProfilePage() {
               </div>
             </section>
 
+            <section id="notifications" className="rounded-2xl border border-border/70 bg-surface p-6 shadow-sm">
+              <h3 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Notifications</h3>
+              <p className="mt-1 text-xs text-text-secondary">
+                Choose how Board Rooms alerts you when classmates reply or trending posts appear nearby.
+              </p>
+              <div className="mt-4 space-y-3 text-sm text-text-secondary">
+                <p>Push notifications and email digests are rolling out soon. In the meantime, you can opt into realtime banners from each board.</p>
+                <button
+                  type="button"
+                  onClick={() => router.push('/')}
+                  className="inline-flex items-center gap-2 rounded-full border border-border/60 px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-secondary transition hover:border-primary/40 hover:text-primary"
+                >
+                  Manage board alerts
+                </button>
+              </div>
+            </section>
+
             <section className="space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Recent posts</h3>
                 {profile && profile.recentPosts.length > 0 ? (
                   <button
                     type="button"
-                    onClick={() => router.push('/boards/campus-quad')}
+                    onClick={() => router.push('/')}
                     className="text-xs uppercase tracking-[2px] text-primary hover:text-primary-light"
                   >
-                    View all →
+                    Explore boards
                   </button>
                 ) : null}
               </div>
@@ -251,11 +259,9 @@ export default function ProfilePage() {
                     key={post.id}
                     post={post}
                     boardName={formatBoardName(post.boardId, post.boardName)}
+                    disabled
+                    disabledReason="Open the board to interact with this post."
                     onOpen={() => router.push(`/boards/${post.boardId}`)}
-                    onLike={disabledAction}
-                    onDislike={disabledAction}
-                    onReply={disabledAction}
-                    onShare={() => addToast({ title: 'Open board to share', description: 'Open the board to grab a shareable link.' })}
                   />
                 ))
               ) : (

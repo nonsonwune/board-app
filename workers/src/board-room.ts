@@ -122,22 +122,27 @@ export class BoardRoom {
       return;
     }
 
-    let payload: any;
+    let rawPayload: unknown;
     try {
-      payload = JSON.parse(text);
+      rawPayload = JSON.parse(text);
     } catch {
       this.sendError(socket, metadata.boardId, 'invalid JSON payload');
       return;
     }
 
-    switch (payload?.type) {
+    const payload =
+      typeof rawPayload === 'object' && rawPayload !== null
+        ? (rawPayload as Record<string, unknown>)
+        : {};
+
+    switch (payload['type']) {
       case 'ping': {
         this.send(socket, {
           type: 'pong',
           boardId: metadata.boardId,
           timestamp: this.now()
         });
-        if (payload.closeAfterPong) {
+        if (payload['closeAfterPong']) {
           this.disconnect(connectionId, 1000, 'pong complete');
         }
         return;
@@ -148,11 +153,11 @@ export class BoardRoom {
             type: 'event',
             trace_id: metadata.traceId,
             origin: connectionId,
-            event: payload.event ?? 'message',
-            data: payload.data ?? null,
+            event: typeof payload['event'] === 'string' ? payload['event'] : 'message',
+            data: payload['data'] ?? null,
             timestamp: this.now()
           },
-          payload.echoSelf ? undefined : connectionId
+          payload['echoSelf'] ? undefined : connectionId
         );
         return;
       }

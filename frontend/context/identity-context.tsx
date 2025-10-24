@@ -15,11 +15,13 @@ interface IdentityContextValue {
   setSession(session: SessionTicket | null): void;
   refreshSession(workerBaseUrl?: string): Promise<SessionTicket | null>;
   linkAccessIdentity(workerBaseUrl?: string): Promise<RegisterIdentityResponse['user'] | null>;
+  logout(workerBaseUrl?: string): Promise<void>;
   hydrated: boolean;
 }
 
 const IdentityContext = createContext<IdentityContextValue | undefined>(undefined);
 const SESSION_COOKIE_NAME = 'boardapp_session_0';
+const DEFAULT_WORKER_BASE_URL = process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788';
 
 function getStoredIdentity(): RegisterIdentityResponse['user'] | null {
   if (typeof window === 'undefined') return null;
@@ -179,9 +181,7 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
   const refreshSession = useCallback(
     async (workerBaseUrl?: string) => {
       if (!identity || !session?.token) return null;
-      const base =
-        workerBaseUrl ??
-        (typeof window !== 'undefined' ? process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788' : '');
+      const base = workerBaseUrl ?? (typeof window !== 'undefined' ? DEFAULT_WORKER_BASE_URL : '');
       if (!base) return null;
       try {
         const res = await fetch(`${base}/identity/session`, {
@@ -211,9 +211,7 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
   const linkAccessIdentity = useCallback(
     async (workerBaseUrl?: string) => {
       if (!session?.token) return null;
-      const base =
-        workerBaseUrl ??
-        (typeof window !== 'undefined' ? process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788' : '');
+      const base = workerBaseUrl ?? (typeof window !== 'undefined' ? DEFAULT_WORKER_BASE_URL : '');
       if (!base) return null;
       try {
         const res = await fetch(`${base}/identity/link`, {
@@ -247,6 +245,29 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     [session?.token]
   );
 
+  const logout = useCallback(
+    async (workerBaseUrl?: string) => {
+      const base = workerBaseUrl ?? DEFAULT_WORKER_BASE_URL;
+      try {
+        await fetch(`${base}/identity/logout`, {
+          method: 'POST',
+          headers: session?.token
+            ? {
+                Authorization: `Bearer ${session.token}`
+              }
+            : undefined,
+          credentials: 'include'
+        });
+      } catch (error) {
+        console.warn('[identity] remote logout failed', error);
+      }
+      setIdentity(null);
+      setSession(null);
+      setLinkAttempted(false);
+    },
+    [session?.token]
+  );
+
   useEffect(() => {
     if (!identity || !session?.expiresAt) return;
     const msUntilRefresh = session.expiresAt - Date.now() - 60_000;
@@ -272,8 +293,8 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
   }, [hydrated, identity?.id, session?.token, linkAttempted, linkAccessIdentity]);
 
   const value = useMemo<IdentityContextValue>(
-    () => ({ identity, aliasMap, setIdentity, setAlias, getAlias, session, setSession, refreshSession, linkAccessIdentity, hydrated }),
-    [identity, aliasMap, session, refreshSession, linkAccessIdentity, hydrated]
+    () => ({ identity, aliasMap, setIdentity, setAlias, getAlias, session, setSession, refreshSession, linkAccessIdentity, logout, hydrated }),
+    [identity, aliasMap, session, refreshSession, linkAccessIdentity, logout, hydrated]
   );
 
   return <IdentityContext.Provider value={value}>{children}</IdentityContext.Provider>;

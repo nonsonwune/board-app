@@ -1,13 +1,16 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import WorkerEntrypoint, {
   __resetSchemaForTests,
   ensureSchema,
   getOrCreateBoard,
   createPost,
+  listBoardsCatalog,
   listPosts,
   listUserPosts,
   listFollowingPosts,
   searchBoardPosts,
+  snapshotBoardMetrics,
   createUser,
   upsertBoardAlias,
   applyReaction,
@@ -20,7 +23,7 @@ import WorkerEntrypoint, {
   detectDeadZones,
   __internal
 } from '../index';
-import type { BoardFeedResponse } from '@board-app/shared';
+import type { BoardCatalogResponse, BoardFeedResponse } from '@board-app/shared';
 import type { Env } from '../index';
 
 type ExecCall = { sql: string };
@@ -116,6 +119,18 @@ class BoundPrepared {
         created_at: createdAt
       });
     }
+    if (this.sql.startsWith('INSERT INTO board_metrics')) {
+      const [boardId, snapshotAt, activeConnections, postsLastHour, postsLastDay, postsPrevDay, lastPostAt] = this.params;
+      this.db.boardMetrics.set(boardId, {
+        board_id: boardId,
+        snapshot_at: snapshotAt,
+        active_connections: activeConnections,
+        posts_last_hour: postsLastHour,
+        posts_last_day: postsLastDay,
+        posts_prev_day: postsPrevDay,
+        last_post_at: lastPostAt ?? null
+      });
+    }
     if (this.sql.startsWith('INSERT INTO dead_zone_alerts')) {
       const [id, boardId, streak, postCount, threshold, windowStart, windowEnd, windowMs, triggeredAt, alertLevel, traceId, createdAt] = this.params;
       this.db.deadZoneAlerts.push({
@@ -166,6 +181,14 @@ class BoundPrepared {
         metadata,
         created_at: createdAt
       });
+    }
+    if (this.sql.startsWith('INSERT INTO sessions')) {
+      const [token, userId, createdAt, expiresAt] = this.params;
+      this.db.sessions.set(token, { token, user_id: userId, created_at: createdAt, expires_at: expiresAt });
+    }
+    if (this.sql.startsWith('DELETE FROM sessions')) {
+      const [token] = this.params;
+      this.db.sessions.delete(token);
     }
     if (this.sql.startsWith('INSERT INTO users')) {
       const [id, pseudonym, normalized, createdAt, status] = this.params;
@@ -297,6 +320,21 @@ class BoundPrepared {
       const results = Array.from(this.db.boards.values()).map(board => ({ id: board.id }));
       return { results: results as T[] };
     }
+    if (
+      this.sql.includes('FROM boards') &&
+      this.sql.includes('display_name') &&
+      this.sql.includes('radius_meters')
+    ) {
+      const limit = Number(this.params[0]) || this.db.boards.size;
+      const rows = Array.from(this.db.boards.values())
+        .sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0))
+        .slice(0, limit);
+      return { results: rows as T[] };
+    }
+    if (this.sql.includes('FROM board_metrics')) {
+      const rows = Array.from(this.db.boardMetrics.values());
+      return { results: rows as T[] };
+    }
     if (this.sql.startsWith('SELECT id, display_name')) {
       const board = this.db.boards.get(this.params[0]);
       return { results: board ? [board as T] : [] };
@@ -427,6 +465,16 @@ class BoundPrepared {
       const latest = events[0];
       return latest ? ({ payload: latest.payload } as T) : undefined;
     }
+    if (this.sql.startsWith('SELECT token, user_id, created_at, expires_at FROM sessions')) {
+      const token = this.params[0];
+      const session = this.db.sessions.get(token);
+      return session ? (session as T) : undefined;
+    }
+    if (this.sql.includes('FROM board_metrics')) {
+      const boardId = this.params[0];
+      const record = this.db.boardMetrics.get(boardId);
+      return record ? (record as T) : undefined;
+    }
     if (this.sql.startsWith('SELECT id, display_name')) {
       const board = this.db.boards.get(this.params[0]);
       return board ? (board as T) : undefined;
@@ -509,6 +557,8 @@ class MockD1 {
   accessLinks = new Map<string, { access_subject: string; user_id: string; email: string | null }>();
   deadZoneAlerts: any[] = [];
   accessIdentityEvents: any[] = [];
+  sessions = new Map<string, { token: string; user_id: string; created_at: number; expires_at: number }>();
+  boardMetrics = new Map<string, any>();
 
   async exec(sql: string) {
     this.execCalls.push({ sql });
@@ -558,6 +608,61 @@ describe('storage helpers', () => {
     expect(schemaCalls.length).toBeGreaterThanOrEqual(13); // schema called once, includes dead-zone artifacts
   });
 
+  it('lists boards catalog with limit and ordering', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2024-05-01T10:00:00Z'));
+      await getOrCreateBoard(env, 'alpha-hall');
+      vi.advanceTimersByTime(60_000);
+      await getOrCreateBoard(env, 'beta-labs');
+      vi.advanceTimersByTime(60_000);
+      await getOrCreateBoard(env, 'gamma-garden');
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await snapshotBoardMetrics(env, { now: Date.now() });
+    expect(env.BOARD_DB.boardMetrics.size).toBeGreaterThan(0);
+
+    const boards = await listBoardsCatalog(env, { limit: 2 });
+    expect(boards).toHaveLength(2);
+    expect(boards.map(board => board.id)).toEqual(['alpha-hall', 'beta-labs']);
+    expect(boards[0].displayName).toBe('Alpha Hall');
+    expect(boards[0].activeConnections).toBe(0);
+    expect(boards[0].postsLastHour).toBe(0);
+    expect(boards[0].postsLastDay).toBe(0);
+    expect(boards[0].lastPostAt).toBeNull();
+    expect(boards[0].postsTrend24Hr).toBeNull();
+    expect(boards[0].radiusLabel).toBe('1,500 m radius');
+    expect(boards[0].latitude).toBeNull();
+    expect(boards[0].longitude).toBeNull();
+  });
+
+  it('serves board catalog via HTTP route', async () => {
+    await getOrCreateBoard(env, 'catalog-board');
+
+    await snapshotBoardMetrics(env, { now: Date.now() });
+
+    const request = new Request('https://example.com/boards/catalog?limit=5', {
+      headers: { Origin: 'http://localhost:3000' }
+    });
+    const ctx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn()
+    } as unknown as ExecutionContext;
+
+    const response = await WorkerEntrypoint.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as BoardCatalogResponse;
+    expect(payload.ok).toBe(true);
+    expect(payload.boards.length).toBeGreaterThanOrEqual(1);
+    expect(payload.boards[0].id).toBe('catalog-board');
+    expect(payload.boards[0].activeConnections).toBe(0);
+    expect(payload.boards[0].radiusLabel).toBe('1,500 m radius');
+    expect(payload.boards[0].latitude).toBeNull();
+    expect(payload.boards[0].longitude).toBeNull();
+  });
+
   it('creates and lists posts', async () => {
     const board = await getOrCreateBoard(env, 'demo-board');
     const user = await createUser(env, 'Alice', 'alice');
@@ -582,6 +687,33 @@ describe('storage helpers', () => {
     expect(user.pseudonym).toBe('Pseudonym');
 
     await expect(createUser(env, 'Pseudonym', 'pseudonym')).rejects.toThrow(/UNIQUE/i);
+  });
+
+  it('logs out by deleting session and expiring cookie', async () => {
+    const token = 'token123';
+    const now = Date.now();
+    env.BOARD_DB.sessions.set(token, {
+      token,
+      user_id: 'user-1',
+      created_at: now - 1000,
+      expires_at: now + 60_000
+    });
+
+    const request = new Request('https://example.com/identity/logout', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+    const ctx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn()
+    } as unknown as ExecutionContext;
+
+    const response = await WorkerEntrypoint.fetch(request, env, ctx);
+    expect(response.status).toBe(200);
+    expect(env.BOARD_DB.sessions.has(token)).toBe(false);
+    expect(response.headers.get('Set-Cookie')).toContain('Max-Age=0');
   });
 
   it('upserts board aliases and enforces board-level uniqueness', async () => {

@@ -1,14 +1,20 @@
 
 'use client';
 
-import { FormEvent, useCallback, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from './toast-provider';
+import type { BoardSummary } from '@board-app/shared';
+import BoardMap from './board-map';
+import BoardLocationPicker from './board-location-picker';
+import { formatRelativeTime } from '../lib/date';
 
 interface PhaseSettings {
   boardId: string;
   phaseMode: 'default' | 'phase1';
   textOnly: boolean;
   radiusMeters: number;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788';
@@ -20,15 +26,51 @@ export default function PhaseAdminPanel() {
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<PhaseSettings | null>(null);
+  const [boards, setBoards] = useState<BoardSummary[]>([]);
+  const [boardsLoading, setBoardsLoading] = useState(false);
+  const [boardsError, setBoardsError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const filteredBoards = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) {
+      return boards;
+    }
+    return boards.filter(board =>
+      board.displayName?.toLowerCase().includes(term) || board.id.toLowerCase().includes(term)
+    );
+  }, [boards, search]);
 
-  const fetchSettings = useCallback(async () => {
-    if (!boardId.trim()) {
+  const selectedBoard = useMemo(
+    () => boards.find(board => board.id === settings?.boardId) ?? null,
+    [boards, settings?.boardId]
+  );
+
+  const fetchBoards = useCallback(async () => {
+    setBoardsLoading(true);
+    setBoardsError(null);
+    try {
+      const res = await fetch(`${workerUrl.replace(/\/$/, '')}/boards/catalog?limit=200`);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || !payload?.boards) {
+        throw new Error(payload?.error ?? `Failed to load boards (${res.status})`);
+      }
+      setBoards(payload.boards as BoardSummary[]);
+    } catch (error) {
+      setBoardsError((error as Error).message);
+    } finally {
+      setBoardsLoading(false);
+    }
+  }, [workerUrl]);
+
+  const fetchSettings = useCallback(async (targetId?: string) => {
+    const resolvedId = targetId !== undefined ? targetId.trim() : boardId.trim();
+    if (!resolvedId) {
       addToast({ title: 'Board required', description: 'Enter a board ID to load settings.' });
       return;
     }
     setLoading(true);
     try {
-      const res = await fetch(`${workerUrl.replace(/\/$/, '')}/boards/${encodeURIComponent(boardId.trim())}/phase`, {
+      const res = await fetch(`${workerUrl.replace(/\/$/, '')}/boards/${encodeURIComponent(resolvedId)}/phase`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined
       });
       const body = await res.json().catch(() => ({}));
@@ -36,12 +78,15 @@ export default function PhaseAdminPanel() {
         throw new Error(body?.error ?? `Failed to load (${res.status})`);
       }
       setSettings({
-        boardId: body.boardId ?? boardId.trim(),
+        boardId: body.boardId ?? resolvedId,
         phaseMode: body.phaseMode === 'phase1' ? 'phase1' : 'default',
         textOnly: Boolean(body.textOnly),
-        radiusMeters: Number(body.radiusMeters) || 1500
+        radiusMeters: Number(body.radiusMeters) || 1500,
+        latitude: typeof body.latitude === 'number' ? body.latitude : null,
+        longitude: typeof body.longitude === 'number' ? body.longitude : null
       });
-      addToast({ title: 'Settings loaded', description: `Board ${boardId.trim()} ready.` });
+      setBoardId(resolvedId);
+      addToast({ title: 'Settings loaded', description: `Board ${resolvedId} ready.` });
     } catch (error) {
       addToast({ title: 'Fetch failed', description: (error as Error).message });
       setSettings(null);
@@ -49,6 +94,24 @@ export default function PhaseAdminPanel() {
       setLoading(false);
     }
   }, [workerUrl, boardId, token, addToast]);
+
+  useEffect(() => {
+    fetchBoards();
+  }, [fetchBoards]);
+
+  useEffect(() => {
+    if (!settings && boards.length > 0) {
+      fetchSettings(boards[0].id);
+    }
+  }, [boards, settings, fetchSettings]);
+
+  const handleSelectBoard = useCallback(
+    (id: string) => {
+      setBoardId(id);
+      fetchSettings(id);
+    },
+    [fetchSettings]
+  );
 
   const handleSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -65,6 +128,12 @@ export default function PhaseAdminPanel() {
         addToast({ title: 'Load settings first', description: 'Fetch the board before saving changes.' });
         return;
       }
+      const normalizedLatitude = typeof settings.latitude === 'number' && Number.isFinite(settings.latitude)
+        ? settings.latitude
+        : null;
+      const normalizedLongitude = typeof settings.longitude === 'number' && Number.isFinite(settings.longitude)
+        ? settings.longitude
+        : null;
       setLoading(true);
       try {
         const res = await fetch(`${workerUrl.replace(/\/$/, '')}/boards/${encodeURIComponent(boardId.trim())}/phase`, {
@@ -76,13 +145,47 @@ export default function PhaseAdminPanel() {
           body: JSON.stringify({
             phaseMode: settings.phaseMode,
             textOnly: settings.textOnly,
-            radiusMeters: settings.radiusMeters
+            radiusMeters: settings.radiusMeters,
+            latitude: normalizedLatitude,
+            longitude: normalizedLongitude
           })
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(body?.error ?? `Failed to save (${res.status})`);
         }
+        setSettings(prev =>
+          prev
+            ? {
+                ...prev,
+                phaseMode: body.phaseMode === 'phase1' ? 'phase1' : prev.phaseMode,
+                textOnly: typeof body.textOnly === 'boolean' ? body.textOnly : prev.textOnly,
+                radiusMeters: Number(body.radiusMeters) || prev.radiusMeters,
+                latitude: typeof body.latitude === 'number' ? body.latitude : normalizedLatitude,
+                longitude: typeof body.longitude === 'number' ? body.longitude : normalizedLongitude
+              }
+            : prev
+        );
+        setBoards(prev =>
+          prev.map(board =>
+            board.id === boardId.trim()
+              ? {
+                  ...board,
+                  phaseMode: body.phaseMode === 'phase1' ? 'phase1' : board.phaseMode,
+                  textOnly: typeof body.textOnly === 'boolean' ? body.textOnly : board.textOnly,
+                  radiusMeters: Number(body.radiusMeters) || board.radiusMeters,
+                  latitude:
+                    typeof body.latitude === 'number'
+                      ? body.latitude
+                      : normalizedLatitude ?? board.latitude ?? null,
+                  longitude:
+                    typeof body.longitude === 'number'
+                      ? body.longitude
+                      : normalizedLongitude ?? board.longitude ?? null
+                }
+              : board
+          )
+        );
         addToast({ title: 'Phase settings updated', description: `Board ${boardId.trim()} saved.` });
       } catch (error) {
         addToast({ title: 'Save failed', description: (error as Error).message });
@@ -93,137 +196,300 @@ export default function PhaseAdminPanel() {
     [workerUrl, boardId, token, settings, addToast]
   );
 
+  const previewLatitude = settings?.latitude ?? selectedBoard?.latitude ?? null;
+  const previewLongitude = settings?.longitude ?? selectedBoard?.longitude ?? null;
+  const previewRadius = settings?.radiusMeters ?? selectedBoard?.radiusMeters ?? 1500;
+
   return (
-    <div className="space-y-8 rounded-xl border border-slate-800 bg-slate-950/50 p-6 text-slate-100">
-      <header className="space-y-2">
-        <h1 className="text-2xl font-semibold text-white">Phase 1 Controls</h1>
-        <p className="text-sm text-slate-400">
-          Manage fixed-radius and text-only launch settings for individual boards.
-        </p>
-      </header>
-
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
-            Worker URL
+    <div className="grid gap-6 lg:grid-cols-[320px,1fr]">
+      <aside className="space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Boards</h2>
+          <div className="mt-2 flex items-center gap-2">
             <input
-              value={workerUrl}
-              onChange={event => setWorkerUrl(event.target.value)}
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+              placeholder="Search boards"
+              className="w-full rounded-md border border-border/60 bg-surface px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
             />
-          </label>
-          <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
-            Admin Token
-            <input
-              value={token}
-              onChange={event => setToken(event.target.value)}
-              placeholder="Bearer token"
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-rose-500 focus:outline-none"
-            />
-          </label>
+            <button
+              type="button"
+              onClick={fetchBoards}
+              className="inline-flex items-center rounded-md border border-border/60 bg-surface px-3 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-secondary transition hover:border-primary/40 hover:text-primary"
+              disabled={boardsLoading}
+            >
+              Refresh
+            </button>
+          </div>
         </div>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
-            Board ID
-            <input
-              value={boardId}
-              onChange={event => setBoardId(event.target.value)}
-              placeholder="campus-north"
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={fetchSettings}
-            disabled={loading}
-            className="self-end rounded-md border border-sky-500/40 px-3 py-2 text-sm font-semibold text-sky-200 transition hover:border-sky-400 hover:text-sky-100 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
-          >
-            {loading ? 'Loading…' : 'Fetch Settings'}
-          </button>
+        {boardsError && (
+          <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
+            {boardsError}
+          </div>
+        )}
+        <div className="max-h-[28rem] overflow-y-auto rounded-xl border border-border/60 bg-surface">
+          {boardsLoading ? (
+            <div className="space-y-2 p-3">
+              {[0, 1, 2, 3].map(item => (
+                <div key={item} className="h-16 rounded-lg bg-surface-raised/60 animate-pulse" />
+              ))}
+            </div>
+          ) : filteredBoards.length === 0 ? (
+            <p className="p-3 text-sm text-text-secondary">No boards found. Adjust your search.</p>
+          ) : (
+            <div className="divide-y divide-border/40">
+              {filteredBoards.map(board => {
+                const isActive = board.id === settings?.boardId;
+                const trend = board.postsTrend24Hr ?? null;
+                const trendClass = trend !== null ? (trend > 0 ? 'text-success' : trend < 0 ? 'text-danger' : 'text-text-secondary') : 'text-text-secondary';
+                return (
+                  <button
+                    key={board.id}
+                    type="button"
+                    onClick={() => handleSelectBoard(board.id)}
+                    className={`w-full px-4 py-3 text-left transition ${
+                      isActive ? 'bg-surface-raised/80 border-l-4 border-primary' : 'hover:bg-surface-raised/60'
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-text-primary">{board.displayName ?? board.id}</p>
+                    <p className="text-xs text-text-tertiary">{board.id}</p>
+                    <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-text-secondary">
+                      <span>Live: {board.activeConnections ?? 0}</span>
+                      <span>Posts/hr: {board.postsLastHour ?? 0}</span>
+                      {trend !== null && (
+                        <span className={trendClass}>Trend: {trend > 0 ? '+' : ''}{Math.round(trend)}%</span>
+                      )}
+                      {board.lastPostAt && (
+                        <span>Last post {formatRelativeTime(board.lastPostAt)}</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
+      </aside>
 
-        {settings && (
-          <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
-              <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-3 py-1 text-sky-200">
-                Mode: {settings.phaseMode === 'phase1' ? 'Phase 1 (fixed radius)' : 'Default'}
-              </span>
-              {settings.textOnly && (
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-amber-200">
-                  Text-only enabled
-                </span>
-              )}
-              <span className="rounded-full border border-slate-700 px-3 py-1 text-xs uppercase tracking-[2px] text-slate-400">
-                Board: {settings.boardId}
-              </span>
+      <div className="space-y-8 rounded-xl border border-slate-800 bg-slate-950/50 p-6 text-slate-100">
+        <header className="space-y-2">
+          <h1 className="text-2xl font-semibold text-white">Phase 1 Controls</h1>
+          <p className="text-sm text-slate-400">Manage radius, text-only mode, and location for individual boards.</p>
+        </header>
+
+        {selectedBoard && (
+          <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Live viewers</p>
+              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.activeConnections ?? 0}</p>
             </div>
-            <div className="flex flex-wrap items-center gap-4">
-              <label className="flex items-center gap-2 text-sm text-slate-200">
-                <input
-                  type="radio"
-                  name="phaseMode"
-                  value="default"
-                  checked={settings.phaseMode === 'default'}
-                  onChange={() => setSettings(prev => (prev ? { ...prev, phaseMode: 'default' } : prev))}
-                />
-                Default Mode
-              </label>
-              <label className="flex items-center gap-2 text-sm text-slate-200">
-                <input
-                  type="radio"
-                  name="phaseMode"
-                  value="phase1"
-                  checked={settings.phaseMode === 'phase1'}
-                  onChange={() => setSettings(prev => (prev ? { ...prev, phaseMode: 'phase1' } : prev))}
-                />
-                Phase 1 (Fixed Radius)
-              </label>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Posts (1h)</p>
+              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.postsLastHour ?? 0}</p>
             </div>
-            <label className="flex items-center gap-2 text-sm text-slate-200">
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Posts (24h)</p>
+              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.postsLastDay ?? 0}</p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Trend 24h</p>
+              <p className={`mt-1 text-lg font-semibold ${selectedBoard.postsTrend24Hr ? (selectedBoard.postsTrend24Hr > 0 ? 'text-success' : 'text-danger') : 'text-slate-100'}`}>
+                {selectedBoard.postsTrend24Hr ? `${selectedBoard.postsTrend24Hr > 0 ? '+' : ''}${Math.round(selectedBoard.postsTrend24Hr)}%` : 'n/a'}
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Radius</p>
+              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.radiusLabel ?? `${Math.round(selectedBoard.radiusMeters ?? 1500)} m`}</p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Last post</p>
+              <p className="mt-1 text-lg font-semibold text-slate-100">
+                {selectedBoard.lastPostAt ? formatRelativeTime(selectedBoard.lastPostAt) : 'No activity'}
+              </p>
+            </div>
+          </section>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              Worker URL
               <input
-                type="checkbox"
-                checked={settings.textOnly}
-                onChange={event =>
-                  setSettings(prev => (prev ? { ...prev, textOnly: event.target.checked } : prev))
-                }
+                value={workerUrl}
+                onChange={event => setWorkerUrl(event.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
               />
-              Text-only posts
             </label>
             <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
-              Fixed Radius (meters)
+              Admin Token
               <input
-                type="number"
-                min={250}
-                max={5000}
-                value={settings.radiusMeters}
-                onChange={event =>
-                  setSettings(prev =>
-                    prev ? { ...prev, radiusMeters: Number(event.target.value) || prev.radiusMeters } : prev
-                  )
-                }
-                disabled={settings.phaseMode !== 'phase1'}
-                className="w-40 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
+                value={token}
+                onChange={event => setToken(event.target.value)}
+                placeholder="Bearer token"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-rose-500 focus:outline-none"
               />
-              {settings.phaseMode !== 'phase1' && (
-                <span className="text-[11px] text-slate-500">Radius adjustments only apply in Phase 1 mode.</span>
-              )}
             </label>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              Board ID
+              <input
+                value={boardId}
+                onChange={event => setBoardId(event.target.value)}
+                placeholder="campus-north"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => fetchSettings()}
+              disabled={loading}
+              className="self-end rounded-md border border-sky-500/40 px-3 py-2 text-sm font-semibold text-sky-200 transition hover:border-sky-400 hover:text-sky-100 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
+            >
+              {loading ? 'Loading…' : 'Fetch Settings'}
+            </button>
+          </div>
+
+          {settings && (
+            <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
+                <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-3 py-1 text-sky-200">
+                  Mode: {settings.phaseMode === 'phase1' ? 'Phase 1 (fixed radius)' : 'Default'}
+                </span>
+                {settings.textOnly && (
+                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-amber-200">
+                    Text-only enabled
+                  </span>
+                )}
+                <span className="rounded-full border border-slate-700 px-3 py-1 text-xs uppercase tracking-[2px] text-slate-400">
+                  Board: {settings.boardId}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input
+                    type="radio"
+                    name="phaseMode"
+                    value="default"
+                    checked={settings.phaseMode === 'default'}
+                    onChange={() => setSettings(prev => (prev ? { ...prev, phaseMode: 'default' } : prev))}
+                  />
+                  Default Mode
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-200">
+                  <input
+                    type="radio"
+                    name="phaseMode"
+                    value="phase1"
+                    checked={settings.phaseMode === 'phase1'}
+                    onChange={() => setSettings(prev => (prev ? { ...prev, phaseMode: 'phase1' } : prev))}
+                  />
+                  Phase 1 (Fixed Radius)
+                </label>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={settings.textOnly}
+                  onChange={event =>
+                    setSettings(prev => (prev ? { ...prev, textOnly: event.target.checked } : prev))
+                  }
+                />
+                Text-only posts
+              </label>
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Fixed Radius (meters)
+                <input
+                  type="number"
+                  min={250}
+                  max={5000}
+                  value={settings.radiusMeters}
+                  onChange={event =>
+                    setSettings(prev =>
+                      prev ? { ...prev, radiusMeters: Number(event.target.value) || prev.radiusMeters } : prev
+                    )
+                  }
+                  disabled={settings.phaseMode !== 'phase1'}
+                  className="w-40 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
+                />
+                {settings.phaseMode !== 'phase1' && (
+                  <span className="text-[11px] text-slate-500">Radius adjustments only apply in Phase 1 mode.</span>
+                )}
+              </label>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Latitude
+                <input
+                  type="number"
+                    step="0.000001"
+                    value={settings.latitude ?? ''}
+                    onChange={event =>
+                      setSettings(prev =>
+                        prev
+                          ? {
+                              ...prev,
+                              latitude: event.target.value.trim() === '' ? null : Number(event.target.value)
+                            }
+                          : prev
+                      )
+                    }
+                    className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                    placeholder="e.g. 6.5244"
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                  Longitude
+                  <input
+                    type="number"
+                    step="0.000001"
+                    value={settings.longitude ?? ''}
+                    onChange={event =>
+                      setSettings(prev =>
+                        prev
+                          ? {
+                              ...prev,
+                              longitude: event.target.value.trim() === '' ? null : Number(event.target.value)
+                            }
+                          : prev
+                      )
+                    }
+                    className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  placeholder="e.g. 3.3792"
+                />
+              </label>
+            </div>
+            <BoardLocationPicker
+              latitude={settings.latitude}
+              longitude={settings.longitude}
+              radiusMeters={settings.radiusMeters}
+              onChange={({ latitude, longitude }) =>
+                setSettings(prev => (prev ? { ...prev, latitude, longitude } : prev))
+              }
+            />
           </div>
         )}
 
-        <div className="flex items-center gap-3">
-          <button
-            type="submit"
-            disabled={loading || !settings}
-            className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
-          >
-            {loading ? 'Saving…' : 'Save Phase Settings'}
-          </button>
-          {settings && (
-            <span className="text-xs text-slate-500">Last radius: {Math.round(settings.radiusMeters)} m</span>
-          )}
-        </div>
-      </form>
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={loading || !settings}
+              className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
+            >
+              {loading ? 'Saving…' : 'Save Phase Settings'}
+            </button>
+            {settings && (
+              <span className="text-xs text-slate-500">Last radius: {Math.round(settings.radiusMeters)} m</span>
+            )}
+          </div>
+        </form>
+
+        {previewLatitude !== null && previewLongitude !== null && (
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Map preview</h2>
+            <BoardMap latitude={previewLatitude} longitude={previewLongitude} radiusMeters={previewRadius} />
+          </section>
+        )}
+      </div>
     </div>
   );
 }

@@ -6,17 +6,20 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Menu, X } from 'lucide-react';
 import { useIdentityContext } from '../context/identity-context';
 
+const phaseControlsEnabled = process.env.NEXT_PUBLIC_ENABLE_PHASE_ADMIN === 'true';
+
 export default function AppHeader() {
   const pathname = usePathname();
   const router = useRouter();
-  const { identity, hydrated, setIdentity, setSession } = useIdentityContext();
+  const { identity, hydrated, logout } = useIdentityContext();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const navItems = [
     { href: '/', label: 'Boards' },
     { href: '/profile', label: 'Profile' },
-    { href: '/admin/phase', label: 'Phase Controls' }
-  ];
+    ...(phaseControlsEnabled ? [{ href: '/admin/phase', label: 'Phase Controls' }] : [])
+  ] as const;
 
   const renderLink = (item: (typeof navItems)[number]) => {
     const active = pathname === item.href || (item.href !== '/' && pathname?.startsWith(item.href));
@@ -55,14 +58,17 @@ export default function AppHeader() {
               <p className="font-mono text-[11px] text-text-tertiary">{identity.id}</p>
               <button
                 type="button"
-                onClick={() => {
-                  setIdentity(null);
-                  setSession(null);
+                onClick={async () => {
+                  if (loggingOut) return;
+                  setLoggingOut(true);
+                  await logout().catch(() => null);
+                  setLoggingOut(false);
                   router.push('/profile');
                 }}
                 className="rounded-md border border-danger/30 px-3 py-1 text-[11px] uppercase tracking-[2px] text-danger transition-colors hover:border-danger/60 hover:text-danger/80"
+                disabled={loggingOut}
               >
-                Log out
+                {loggingOut ? 'Signing out…' : 'Log out'}
               </button>
             </div>
           )}
@@ -95,15 +101,18 @@ export default function AppHeader() {
                 <p className="font-mono text-[11px] text-text-tertiary">{identity.id}</p>
                 <button
                   type="button"
-                  onClick={() => {
-                    setIdentity(null);
-                    setSession(null);
+                  onClick={async () => {
+                    if (loggingOut) return;
+                    setLoggingOut(true);
+                    await logout().catch(() => null);
+                    setLoggingOut(false);
                     setMenuOpen(false);
                     router.push('/profile');
                   }}
                   className="rounded-md border border-danger/30 px-2 py-1 text-[11px] uppercase tracking-[2px] text-danger transition-colors hover:border-danger/60 hover:text-danger/80"
+                  disabled={loggingOut}
                 >
-                  Log out
+                  {loggingOut ? 'Signing out…' : 'Log out'}
                 </button>
               </div>
             )}

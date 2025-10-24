@@ -19,6 +19,7 @@ export interface PostCardProps {
   onShare?: (post: BoardPost) => void;
   onMore?: (post: BoardPost) => void;
   disabled?: boolean;
+  disabledReason?: string;
 }
 
 function PostCardComponent({
@@ -33,7 +34,8 @@ function PostCardComponent({
   onReply,
   onShare,
   onMore,
-  disabled
+  disabled,
+  disabledReason
 }: PostCardProps) {
   const createdLabel = formatRelativeTime(post.createdAt);
   const displayName = post.alias?.trim() || post.pseudonym?.trim() || "Anonymous";
@@ -151,6 +153,11 @@ function PostCardComponent({
           disabled={disabled}
         />
       </footer>
+      {disabled && disabledReason ? (
+        <p className="mt-2 text-xs uppercase tracking-[1.5px] text-text-tertiary">
+          {disabledReason}
+        </p>
+      ) : null}
     </article>
   );
 }

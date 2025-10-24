@@ -8,7 +8,6 @@ import { Loader2, RefreshCcw } from 'lucide-react';
 import { PageShell, PageHeader } from '../../components/page-shell';
 import PostCard from '../../components/feed/post-card';
 import { useIdentityContext } from '../../context/identity-context';
-import { useToast } from '../../components/toast-provider';
 import { formatBoardName } from '../../lib/board';
 
 const PAGE_SIZE = 10;
@@ -24,7 +23,6 @@ function createHttpError(message: string, status?: number): HttpError {
 export default function FollowingPage() {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
   const { identity, session, refreshSession, setSession } = useIdentityContext();
-  const { addToast } = useToast();
   const router = useRouter();
 
   const [posts, setPosts] = useState<BoardPost[]>([]);
@@ -127,13 +125,6 @@ export default function FollowingPage() {
     loadFeed({ cursorOverride: cursorRef.current ?? null });
   }, [hasMore, loading, loadFeed]);
 
-  const disabledAction = useCallback(() => {
-    addToast({
-      title: 'Open board to interact',
-      description: 'Jump into the board to react or reply to this post.'
-    });
-  }, [addToast]);
-
   const canViewFeed = Boolean(identity && session?.token);
 
   return (
@@ -191,15 +182,8 @@ export default function FollowingPage() {
                   key={post.id}
                   post={post}
                   boardName={boardLabel}
-                  onLike={disabledAction}
-                  onDislike={disabledAction}
-                  onReply={disabledAction}
-                  onShare={() => {
-                    addToast({
-                      title: 'Share from board view',
-                      description: 'Open the board to grab a shareable link.'
-                    });
-                  }}
+                  disabled
+                  disabledReason="Open the board to react, reply, or share."
                   onOpen={() => router.push(`/boards/${post.boardId}`)}
                 />
               );

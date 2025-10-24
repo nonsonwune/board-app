@@ -28,6 +28,7 @@ import PostCard from './feed/post-card';
 import PostDetail from './feed/post-detail';
 import { formatBoardDistance } from '../lib/date';
 import { formatBoardName } from '../lib/board';
+import BoardMap from './board-map';
 
 const DEFAULT_SPACE_TABS = ['Home', 'Student Life', 'Events', 'Sports'];
 type ReplyState = BoardReply & { pending?: boolean };
@@ -125,6 +126,10 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [repliesLoading, setRepliesLoading] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
   const [activeSpaceId, setActiveSpaceId] = useState('home');
+  const [showIdentityModal, setShowIdentityModal] = useState(false);
+  const [identityModalMode, setIdentityModalMode] = useState<'register' | 'session' | 'alias'>('register');
+  const [sessionRefreshing, setSessionRefreshing] = useState(false);
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
   const sessionToken = session?.token ?? null;
   const { addToast } = useToast();
   const [heartbeatTick, setHeartbeatTick] = useState(() => Date.now());
@@ -152,12 +157,18 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   }, []);
   const quietModePrompt = useMemo(() => quietPrompts[Math.floor(Math.random() * quietPrompts.length)], [quietPrompts]);
   const openComposer = useCallback(() => {
-    if (!identity || !sessionToken) {
-      addToast({ title: 'Register identity', description: 'Create a pseudonym to start posting.' });
+    if (!identity) {
+      setIdentityModalMode('register');
+      setShowIdentityModal(true);
+      return;
+    }
+    if (!sessionToken) {
+      setIdentityModalMode('session');
+      setShowIdentityModal(true);
       return;
     }
     setComposerOpen(true);
-  }, [identity, sessionToken, addToast]);
+  }, [identity, sessionToken]);
 
   const postsPerMinute = useMemo(() => {
     if (events.length === 0) return 0;
@@ -282,7 +293,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
 
   const remainingCharacters = MAX_POST_CHARACTERS - composerBody.length;
   const showQuietState = !feedLoading && !feedError && filteredPosts.length === 0;
-  const showDevTools = process.env.NODE_ENV !== 'production';
+  const enableDevToolsFlag = process.env.NEXT_PUBLIC_UI_DEVTOOLS === 'true';
+  const showDevTools = process.env.NODE_ENV !== 'production' || enableDevToolsFlag;
   const activeReplies = selectedPost ? repliesByPostId[selectedPost.id] ?? [] : [];
   const showLiveBanner = status === 'connected' && !isHeartbeatStale && (connectionCount > 1 || postsPerMinute > 0);
 
@@ -312,6 +324,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const radiusMetersDisplay = boardMeta?.radiusMeters ? Math.round(boardMeta.radiusMeters) : null;
   const boardDistanceLabel = boardMeta ? formatBoardDistance(boardMeta.radiusMeters) : null;
   const friendlyBoardName = useMemo(() => formatBoardName(boardId, boardMeta?.displayName), [boardId, boardMeta?.displayName]);
+  const boardLatitude = boardMeta?.latitude ?? null;
+  const boardLongitude = boardMeta?.longitude ?? null;
 
   useEffect(() => {
     const connectionStatus = isHeartbeatStale ? 'connecting' : chromeConnectionStatus;
@@ -750,15 +764,17 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         return;
       }
       if (!userId) {
-        const message = 'Provide a user ID or register an identity first.';
+        const message = 'Register an identity to react to posts.';
         setReactionStatus(message);
-        addToast({ title: 'Identity required', description: message });
+        setIdentityModalMode('register');
+        setShowIdentityModal(true);
         return;
       }
       if (!sessionToken) {
         const message = 'Session expired. Re-register identity.';
         setReactionStatus(message);
-        addToast({ title: 'Session expired', description: message });
+        setIdentityModalMode('session');
+        setShowIdentityModal(true);
         return;
       }
 
@@ -820,13 +836,14 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       identity,
       reactionUserId,
       sessionToken,
-      addToast,
       workerBaseUrl,
       boardId,
       buildHeaders,
       raiseForStatus,
       handleSessionError,
-      setReactionStatus
+      setReactionStatus,
+      setIdentityModalMode,
+      setShowIdentityModal
     ]
   );
 
@@ -873,8 +890,14 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         addToast({ title: 'Message required', description: 'Enter a post before submitting.' });
         return false;
       }
-      if (!identity || !sessionToken) {
-        addToast({ title: 'Session needed', description: 'Register or refresh your identity first.' });
+      if (!identity) {
+        setIdentityModalMode('register');
+        setShowIdentityModal(true);
+        return false;
+      }
+      if (!sessionToken) {
+        setIdentityModalMode('session');
+        setShowIdentityModal(true);
         return false;
       }
 
@@ -912,8 +935,180 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       }
       return false;
     },
-    [identity, sessionToken, alias?.alias, workerBaseUrl, boardId, buildHeaders, raiseForStatus, fetchFeed, addToast, handleSessionError, setIdentityError]
+    [
+      identity,
+      sessionToken,
+      alias,
+      workerBaseUrl,
+      boardId,
+      buildHeaders,
+      raiseForStatus,
+      fetchFeed,
+      addToast,
+      handleSessionError,
+      setIdentityError,
+      setIdentityModalMode,
+      setShowIdentityModal
+    ]
   );
+
+  const registerIdentity = useCallback(
+    async (pseudonym: string) => {
+      const trimmed = pseudonym.trim();
+      if (!trimmed) {
+        setIdentityError('Pseudonym is required.');
+        return false;
+      }
+
+      setIdentityLoading(true);
+      setIdentityError(null);
+
+      try {
+        const res = await fetch(`${workerBaseUrl}/identity/register`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ pseudonym: trimmed })
+        });
+
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok || !payload?.user) {
+          throw new Error(payload?.error ?? `Failed to register identity (${res.status})`);
+        }
+
+        const body = payload as RegisterIdentityResponse;
+        setIdentity(body.user);
+        setSession(body.session);
+        addToast({ title: 'Identity registered', description: `Hello, ${body.user.pseudonym}!` });
+        return true;
+      } catch (error) {
+        setIdentityError((error as Error).message ?? 'Failed to register identity');
+        return false;
+      } finally {
+        setIdentityLoading(false);
+      }
+    },
+    [workerBaseUrl, setIdentity, setSession, addToast, setIdentityError, setIdentityLoading]
+  );
+
+  const saveAlias = useCallback(
+    async (value: string) => {
+      const trimmed = value.trim();
+
+      if (!identity) {
+        setAliasError('Register an identity first.');
+        setIdentityModalMode('register');
+        setShowIdentityModal(true);
+        return false;
+      }
+      if (!sessionToken) {
+        setAliasError('Session expired. Re-register identity.');
+        setIdentityModalMode('session');
+        setShowIdentityModal(true);
+        return false;
+      }
+      if (!trimmed) {
+        setAliasError('Alias cannot be empty.');
+        return false;
+      }
+
+      setAliasLoading(true);
+      setAliasError(null);
+      setAliasStatus(null);
+
+      const attempt = async () => {
+        const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases`, {
+          method: alias ? 'PUT' : 'POST',
+          headers: buildHeaders({ 'content-type': 'application/json' }),
+          body: JSON.stringify({ userId: identity.id, alias: trimmed })
+        });
+
+        const payload = await res.json().catch(() => ({}));
+        raiseForStatus(res, payload, `Failed to update alias (${res.status})`);
+
+        const body = payload as UpsertAliasResponse;
+        setAlias(body.alias);
+        setAliasInput(body.alias.alias);
+        setAliasStatus(`Alias set to “${body.alias.alias}”.`);
+        addToast({ title: 'Alias saved', description: `Showing as ${body.alias.alias} on this board.` });
+      };
+
+      try {
+        await attempt();
+        return true;
+      } catch (error) {
+        const outcome = await handleSessionError(error, workerBaseUrl, msg => setAliasError(msg));
+        if (outcome === 'refreshed') {
+          try {
+            await attempt();
+            return true;
+          } catch (retryError) {
+            setAliasError((retryError as Error).message ?? 'Failed to update alias');
+          }
+        } else if (outcome !== 'expired') {
+          setAliasError((error as Error).message ?? 'Failed to update alias');
+        }
+        return false;
+      } finally {
+        setAliasLoading(false);
+      }
+    },
+    [
+      identity,
+      sessionToken,
+      alias,
+      workerBaseUrl,
+      boardId,
+      buildHeaders,
+      raiseForStatus,
+      setAlias,
+      addToast,
+      handleSessionError,
+      setAliasError,
+      setAliasInput,
+      setAliasStatus,
+      setAliasLoading,
+      setIdentityModalMode,
+      setShowIdentityModal
+    ]
+  );
+
+  const closeIdentityModal = useCallback(() => {
+    setShowIdentityModal(false);
+  }, []);
+
+  const dismissIdentityModal = useCallback(() => {
+    setIdentityError(null);
+    setAliasError(null);
+    setSessionMessage(null);
+    closeIdentityModal();
+  }, [closeIdentityModal, setAliasError, setIdentityError, setSessionMessage]);
+
+  const refreshIdentitySession = useCallback(async () => {
+    if (!identity || !session?.token) {
+      setSessionMessage('Register identity again to create a new session.');
+      return false;
+    }
+
+    setSessionRefreshing(true);
+    setSessionMessage(null);
+
+    try {
+      const ticket = await refreshSession(workerBaseUrl);
+      if (!ticket) {
+        setSessionMessage('Session expired. Re-register identity.');
+        setSession(null);
+        return false;
+      }
+      setSessionMessage(`Session refreshed • expires ${new Date(ticket.expiresAt).toLocaleString()}`);
+      addToast({ title: 'Session refreshed', description: 'Identity session extended.' });
+      return true;
+    } catch (error) {
+      setSessionMessage((error as Error).message ?? 'Unable to refresh session.');
+      return false;
+    } finally {
+      setSessionRefreshing(false);
+    }
+  }, [identity, session?.token, refreshSession, workerBaseUrl, setSession, addToast, setSessionMessage, setSessionRefreshing]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1058,6 +1253,16 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           };
         })
       );
+      setSelectedPost(current =>
+        current && current.id === payload.postId
+          ? {
+              ...current,
+              reactionCount: reactions.total,
+              likeCount: reactions.likeCount,
+              dislikeCount: reactions.dislikeCount
+            }
+          : current
+      );
       setReactionStatus(
         `Realtime update • Post ${payload.postId}: 👍 ${reactions.likeCount} / 👎 ${reactions.dislikeCount}`
       );
@@ -1070,36 +1275,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     const formData = new FormData(form);
     const pseudonym = (formData.get('pseudonym') as string)?.trim();
 
-    if (!pseudonym) {
-      setIdentityError('Pseudonym is required.');
-      return;
-    }
-
-    setIdentityLoading(true);
-    setIdentityError(null);
-
-    try {
-      const res = await fetch(`${workerBaseUrl}/identity/register`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pseudonym })
-      });
-
-      const payload = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(payload?.error ?? `Failed to register identity (${res.status})`);
-      }
-
-      const body = payload as RegisterIdentityResponse;
-      setIdentity(body.user);
-      setSession(body.session);
+    const success = await registerIdentity(pseudonym ?? '');
+    if (success) {
       form.reset();
-      addToast({ title: 'Identity registered', description: 'You can now post and react.' });
-    } catch (error) {
-      setIdentityError((error as Error).message ?? 'Failed to register identity');
-    } finally {
-      setIdentityLoading(false);
     }
   }
 
@@ -1129,59 +1307,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     const formData = new FormData(form);
     const aliasValue = (formData.get('boardAlias') as string)?.trim();
 
-    if (!identity) {
-      setAliasError('Register an identity first.');
-      return;
-    }
-
-    if (!sessionToken) {
-      setAliasError('Session expired. Re-register identity.');
-      return;
-    }
-
-    if (!aliasValue) {
-      setAliasError('Alias cannot be empty.');
-      return;
-    }
-
-    setAliasLoading(true);
-    setAliasError(null);
-    setAliasStatus(null);
-
-    const attempt = async () => {
-      const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases`, {
-        method: alias ? 'PUT' : 'POST',
-        headers: buildHeaders({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ userId: identity.id, alias: aliasValue })
-      });
-
-      const payload = await res.json().catch(() => ({}));
-      raiseForStatus(res, payload, `Failed to update alias (${res.status})`);
-
-      const body = payload as UpsertAliasResponse;
-      setAlias(body.alias);
-      setAliasInput(body.alias.alias);
-      setAliasStatus(`Alias set to “${body.alias.alias}”.`);
-      addToast({ title: 'Alias saved', description: `Showing as ${body.alias.alias} on this board.` });
-    };
-
-    try {
-      await attempt();
-    } catch (error) {
-      const outcome = await handleSessionError(error, workerBaseUrl, msg => setAliasError(msg));
-      if (outcome === 'refreshed') {
-        try {
-          await attempt();
-          return;
-        } catch (retryError) {
-          setAliasError((retryError as Error).message ?? 'Failed to update alias');
-        }
-      }
-      if (outcome !== 'expired') {
-        setAliasError((error as Error).message ?? 'Failed to update alias');
-      }
-    } finally {
-      setAliasLoading(false);
+    const success = await saveAlias(aliasValue ?? '');
+    if (success) {
+      form.reset();
     }
   }
 
@@ -1219,11 +1347,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         }
       }
       if (outcome === 'expired') {
-        alert('Session expired. Re-register identity.');
+        addToast({ title: 'Session expired', description: 'Re-register identity to keep sending events.' });
         return;
       }
       console.error('[ui] failed to inject event', error);
-      alert('Failed to send event. See console for details.');
+      addToast({ title: 'Event dispatch failed', description: 'Check console for details.' });
     }
   }
 
@@ -1278,6 +1406,18 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 Alias: <strong className="text-slate-100">{alias?.alias ?? boardAliasLookup.get(effectiveIdentity.id) ?? '—'}</strong>
               </span>
             )}
+            {effectiveIdentity && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIdentityModalMode('alias');
+                  setShowIdentityModal(true);
+                }}
+                className="rounded-md border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
+              >
+                Edit alias
+              </button>
+            )}
             <Link
               href="/profile"
               className="rounded-md border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
@@ -1301,6 +1441,13 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             )}
           </div>
         )}
+
+        {boardLatitude !== null && boardLongitude !== null ? (
+          <section className="mt-8 space-y-3">
+            <h2 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Board coverage map</h2>
+            <BoardMap latitude={boardLatitude} longitude={boardLongitude} radiusMeters={boardMeta?.radiusMeters ?? null} />
+          </section>
+        ) : null}
 
         {error && (
           <div className="mt-6 rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200">
@@ -1675,6 +1822,48 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           )}
         </section>
       </div>
+      {showIdentityModal && (
+        <IdentityOnboardingModal
+          mode={identityModalMode}
+          loading={identityLoading}
+          aliasLoading={aliasLoading}
+          identityError={identityError}
+          aliasError={aliasError}
+          defaultAlias={aliasInput}
+          sessionMessage={sessionMessage}
+          sessionRefreshing={sessionRefreshing}
+          onClose={dismissIdentityModal}
+          onRegister={async (pseudonym, aliasValue) => {
+            const success = await registerIdentity(pseudonym);
+            if (!success) {
+              return false;
+            }
+            if (aliasValue && aliasValue.trim()) {
+              const aliasSaved = await saveAlias(aliasValue);
+              if (!aliasSaved) {
+                return false;
+              }
+            }
+            dismissIdentityModal();
+            return true;
+          }}
+          onSaveAlias={async aliasValue => {
+            const aliasSaved = await saveAlias(aliasValue);
+            if (aliasSaved) {
+              dismissIdentityModal();
+              return true;
+            }
+            return false;
+          }}
+          onRefreshSession={async () => {
+            const result = await refreshIdentitySession();
+            if (result) {
+              dismissIdentityModal();
+            }
+            return result;
+          }}
+        />
+      )}
       {composerOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm sm:items-center">
           <button
@@ -1689,6 +1878,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 <p className="text-xs uppercase tracking-[2px] text-slate-500">Post to {friendlyBoardName}</p>
                 <h3 className="mt-1 text-lg font-semibold text-slate-100">What’s happening here?</h3>
               </header>
+              {isTextOnlyBoard && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                  Images are disabled for this board. Share a quick text update to reach your neighbors.
+                </div>
+              )}
               <textarea
                 value={composerBody}
                 onChange={event => setComposerBody(event.target.value.slice(0, MAX_POST_CHARACTERS))}
@@ -1741,6 +1935,171 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           onClose={() => setSelectedPost(null)}
         />
       )}
+    </div>
+  );
+}
+
+interface IdentityOnboardingModalProps {
+  mode: 'register' | 'session' | 'alias';
+  loading: boolean;
+  aliasLoading: boolean;
+  identityError: string | null;
+  aliasError: string | null;
+  defaultAlias?: string | null;
+  sessionMessage: string | null;
+  sessionRefreshing: boolean;
+  onRegister: (pseudonym: string, alias?: string) => Promise<boolean>;
+  onSaveAlias: (alias: string) => Promise<boolean>;
+  onRefreshSession: () => Promise<boolean>;
+  onClose: () => void;
+}
+
+function IdentityOnboardingModal({
+  mode,
+  loading,
+  aliasLoading,
+  identityError,
+  aliasError,
+  defaultAlias,
+  sessionMessage,
+  sessionRefreshing,
+  onRegister,
+  onSaveAlias,
+  onRefreshSession,
+  onClose
+}: IdentityOnboardingModalProps) {
+  const [pseudonym, setPseudonym] = useState('');
+  const [aliasValue, setAliasValue] = useState(defaultAlias ?? '');
+  const [touched, setTouched] = useState(false);
+
+  useEffect(() => {
+    setPseudonym('');
+    setTouched(false);
+  }, [mode]);
+
+  useEffect(() => {
+    setAliasValue(defaultAlias ?? '');
+  }, [defaultAlias, mode]);
+
+  const showPseudonymField = mode === 'register';
+  const showAliasField = mode === 'register' || mode === 'alias';
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setTouched(true);
+    if (mode === 'register') {
+      if (!pseudonym.trim()) {
+        return;
+      }
+      await onRegister(pseudonym, aliasValue);
+      return;
+    }
+    if (mode === 'alias') {
+      if (!aliasValue.trim()) {
+        return;
+      }
+      await onSaveAlias(aliasValue);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
+      <button type="button" className="absolute inset-0" onClick={onClose} aria-label="Close identity modal" />
+      <div className="relative z-10 w-full max-w-md rounded-3xl border border-slate-800 bg-slate-950 p-6 text-slate-100 shadow-xl">
+        <header className="mb-4 space-y-1">
+          <h2 className="text-lg font-semibold">
+            {mode === 'register'
+              ? 'Create your campus identity'
+              : mode === 'alias'
+                ? 'Set your board alias'
+                : 'Refresh your posting session'}
+          </h2>
+          <p className="text-sm text-slate-400">
+            {mode === 'register'
+              ? 'Pick a pseudonym students will see across boards. You can add a board-specific alias now or later.'
+              : mode === 'alias'
+                ? 'Update how neighbors see you on this board. Aliases stay local and override your global pseudonym.'
+                : 'Your session expired. Refresh to keep posting and reacting without losing progress.'}
+          </p>
+        </header>
+
+        {mode === 'register' || mode === 'alias' ? (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {showPseudonymField && (
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Pseudonym
+                <input
+                  value={pseudonym}
+                  onChange={event => setPseudonym(event.target.value)}
+                  placeholder="e.g. CampusScout"
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  autoFocus
+                />
+              </label>
+            )}
+            {showPseudonymField && touched && !pseudonym.trim() && (
+              <p className="text-xs text-rose-300">Pseudonym is required.</p>
+            )}
+            {showAliasField && (
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                Board alias (optional)
+                <input
+                  value={aliasValue}
+                  onChange={event => setAliasValue(event.target.value)}
+                  placeholder="LibraryLookout"
+                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  autoFocus={mode === 'alias'}
+                />
+              </label>
+            )}
+            {mode === 'alias' && touched && !aliasValue.trim() && (
+              <p className="text-xs text-rose-300">Alias cannot be empty.</p>
+            )}
+            {mode === 'register' && identityError && <p className="text-xs text-rose-300">{identityError}</p>}
+            {aliasError && <p className="text-xs text-rose-300">{aliasError}</p>}
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled=
+                  {mode === 'register'
+                    ? loading || (!pseudonym.trim() && touched)
+                    : aliasLoading || (mode === 'alias' && touched && !aliasValue.trim())}
+                className="rounded-full bg-sky-500 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {loading || aliasLoading ? 'Saving…' : mode === 'alias' ? 'Save alias' : 'Continue'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="space-y-4">
+            {sessionMessage && <p className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-300">{sessionMessage}</p>}
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={onRefreshSession}
+                disabled={sessionRefreshing}
+                className="rounded-full bg-sky-500 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {sessionRefreshing ? 'Refreshing…' : 'Refresh session'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

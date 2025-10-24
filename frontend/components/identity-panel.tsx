@@ -309,7 +309,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
 
   return (
     <div className="space-y-10">
-      <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+      <section id="identity" className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
         <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Identity</h2>
         <form onSubmit={handleRegister} className="mt-4 flex flex-wrap items-end gap-4">
           <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
@@ -381,7 +381,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
         )}
       </section>
 
-      <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+      <section id="aliases" className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
         <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Board Alias</h2>
         <form onSubmit={handleAliasSubmit} className="mt-4 grid gap-4 sm:grid-cols-3">
           <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">

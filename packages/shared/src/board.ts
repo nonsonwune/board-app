@@ -7,6 +7,14 @@ export interface BoardSummary {
   radiusUpdatedAt?: number | null;
   phaseMode?: 'default' | 'phase1';
   textOnly?: boolean;
+  activeConnections?: number;
+  postsLastHour?: number;
+  postsLastDay?: number;
+  lastPostAt?: number | null;
+  postsTrend24Hr?: number | null;
+  radiusLabel?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface PostImageDraft {
@@ -58,6 +66,11 @@ export interface BoardFeedResponse {
   posts: BoardPost[];
   realtimeConnections: number;
   spaces?: BoardSpace[];
+}
+
+export interface BoardCatalogResponse {
+  ok: boolean;
+  boards: BoardSummary[];
 }
 
 export interface BoardSpace {

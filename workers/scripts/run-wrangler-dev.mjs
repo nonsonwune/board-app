@@ -27,7 +27,6 @@ function isPortFree(port) {
 
 async function findOpenPort(start, max) {
   for (let port = start; port <= max; port += 1) {
-    // eslint-disable-next-line no-await-in-loop
     const free = await isPortFree(port);
     if (free) {
       return { port, reused: port !== start };

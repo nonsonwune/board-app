@@ -5,7 +5,6 @@ import type { BoardPost, SearchPostsResponse } from '@board-app/shared';
 import { Loader2, Search as SearchIcon } from 'lucide-react';
 import PostCard from '../../components/feed/post-card';
 import { PageShell, PageHeader } from '../../components/page-shell';
-import { useToast } from '../../components/toast-provider';
 import { useIdentityContext } from '../../context/identity-context';
 import { formatBoardName } from '../../lib/board';
 import { useRouter } from 'next/navigation';
@@ -27,7 +26,6 @@ function createHttpError(message: string, status?: number): HttpError {
 export default function SearchPage() {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
   const { session } = useIdentityContext();
-  const { addToast } = useToast();
   const router = useRouter();
 
   const [query, setQuery] = useState('');
@@ -140,13 +138,6 @@ export default function SearchPage() {
     executeSearch({ reset: true, cursorOverride: null, queryOverride: topic });
   };
 
-  const disabledAction = useCallback(() => {
-    addToast({
-      title: 'Open board to interact',
-      description: 'Jump into the board to react or reply to this post.'
-    });
-  }, [addToast]);
-
   return (
     <PageShell>
       <div className="space-y-8">
@@ -241,10 +232,8 @@ export default function SearchPage() {
               key={post.id}
               post={post}
               boardName={formatBoardName(post.boardId, post.boardName)}
-              onLike={disabledAction}
-              onDislike={disabledAction}
-              onReply={disabledAction}
-              onShare={() => addToast({ title: 'Open board to share', description: 'Open the board to grab a shareable link.' })}
+              disabled
+              disabledReason="Open the board to react, reply, or share."
               onOpen={() => router.push(`/boards/${post.boardId}`)}
             />
           ))}
