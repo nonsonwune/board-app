@@ -1987,10 +1987,23 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // Health check endpoint
+    if (url.pathname === '/' || url.pathname === '/health') {
+      return new Response(JSON.stringify({
+        status: 'ok',
+        service: 'board-app-workers',
+        version: '1.0.0',
+        timestamp: new Date().toISOString()
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
     // Use Hono for /identity/* routes
-    if (url.pathname.startsWith('/identity/')) {
+    if (url.pathname.startsWith('/identity')) {
       const app = new Hono<{ Bindings: Env }>();
-      app.route('/identity', authRoutes);
+      app.route('/', authRoutes);
       return app.fetch(request, env, ctx);
     }
 
@@ -1998,32 +2011,12 @@ export default {
       return withCors(request, new Response(null, { status: 204 }), env);
     }
 
-    if (url.pathname === '/_health') {
-      return new Response('ok', { status: 200 });
+    const upgradeHeader = request.headers.get('Upgrade');
+    if (url.pathname === '/boards' && upgradeHeader === 'websocket') {
+      return handleWebsocket(request, env, ctx, url);
     }
 
     try {
-      // Legacy handlers remain for non-auth routes
-      if (url.pathname === '/identity/session') {
-        return withCors(request, await handleCreateSession(request, env), env);
-      }
-
-      if (url.pathname === '/identity/register') {
-        return withCors(request, await handleRegisterIdentity(request, env), env);
-      }
-
-      if (url.pathname === '/identity/link') {
-        return withCors(request, await handleLinkIdentity(request, env), env);
-      }
-
-      if (url.pathname === '/identity/logout') {
-        return withCors(request, await handleLogout(request, env), env);
-      }
-
-      const upgradeHeader = request.headers.get('Upgrade');
-      if (url.pathname === '/boards' && upgradeHeader === 'websocket') {
-        return handleWebsocket(request, env, ctx, url);
-      }
 
       if (url.pathname === '/boards/catalog') {
         return withCors(request, await handleBoardsCatalog(request, env, url), env);
