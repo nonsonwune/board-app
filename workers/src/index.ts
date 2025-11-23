@@ -109,7 +109,7 @@ export default {
     if (url.pathname.startsWith('/identity')) {
       const app = new Hono<{ Bindings: Env }>();
       app.use('*', corsMiddleware);
-      app.route('/', authRoutes);
+      app.route('/identity', authRoutes);
       return app.fetch(request, env, ctx);
     }
 

@@ -54,7 +54,7 @@ class BoundPrepared {
   }
 
   async raw<T extends unknown[] = unknown[]>(): Promise<T> {
-    return [] as T;
+    return [] as unknown as T;
   }
 
   async run() {
@@ -311,6 +311,51 @@ class BoundPrepared {
       this.db.follows = this.db.follows.filter(
         entry => !(entry.follower_id === followerId && entry.following_id === followingId)
       );
+    }
+    if (this.sql.startsWith('INSERT INTO board_events')) {
+      // INSERT INTO board_events (id, board_id, event_type, payload, created_at, trace_id)
+      const [id, boardId, eventType, payload, createdAt, traceId] = this.params;
+      this.db.events.push({
+        id,
+        board_id: boardId,
+        event_type: eventType,
+        payload,
+        created_at: createdAt,
+        trace_id: traceId
+      });
+      if (eventType === 'board.dead_zone_triggered') {
+        const parsed = JSON.parse(payload);
+        this.db.deadZoneAlerts.push({
+          board_id: boardId,
+          streak: parsed.deadZoneStreak,
+          created_at: createdAt
+        });
+      }
+    }
+    if (this.sql.startsWith('UPDATE boards')) {
+      if (this.sql.includes('radius_meters = ?1')) {
+        // Adaptive radius update
+        const [radiusMeters, radiusState, radiusUpdatedAt, boardId] = this.params;
+        const board = this.db.boards.get(boardId);
+        if (board) {
+          board.radius_meters = radiusMeters;
+          board.radius_state = radiusState;
+          board.radius_updated_at = radiusUpdatedAt;
+        }
+      } else if (this.sql.includes('phase_mode = ?1')) {
+        // Phase update
+        const [phaseMode, textOnly, radiusMeters, radiusState, radiusUpdatedAt, latitude, longitude, boardId] = this.params;
+        const board = this.db.boards.get(boardId);
+        if (board) {
+          board.phase_mode = phaseMode;
+          board.text_only = Boolean(textOnly);
+          board.radius_meters = radiusMeters;
+          board.radius_state = radiusState;
+          board.radius_updated_at = radiusUpdatedAt;
+          if (latitude !== null) board.latitude = latitude;
+          if (longitude !== null) board.longitude = longitude;
+        }
+      }
     }
     return {
       results: [],
@@ -598,7 +643,8 @@ class MockD1 {
       exec: (sql: string) => this.exec(sql),
       prepare: (sql: string) => this.prepare(sql),
       batch: <T>(statements: D1PreparedStatement[]) => this.batch<T>(statements),
-      dump: () => this.dump()
+      dump: () => this.dump(),
+      getBookmark: () => null
     } as D1DatabaseSession;
   }
 }

@@ -33,8 +33,8 @@ jobs:
       - name: Build frontend
         run: pnpm --filter @board-app/frontend build
         env:
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL || 'https://board-app-workers.chuqunonso.workers.dev' }}
-          NEXT_PUBLIC_WS_URL: ${{ secrets.NEXT_PUBLIC_WS_URL || 'wss://board-app-workers.chuqunonso.workers.dev' }}
+          NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL || 'https://board-app-workers.chuqunonso.workers.dev' }}"
+          NEXT_PUBLIC_WS_URL: "${{ secrets.NEXT_PUBLIC_WS_URL || 'wss://board-app-workers.chuqunonso.workers.dev' }}"
       
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
