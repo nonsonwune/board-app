@@ -38,3 +38,8 @@ export const UpsertAliasSchema = z.object({
   userId: z.string(),
   alias: z.string().min(3).max(24),
 });
+
+export const FollowRequestSchema = z.object({
+  targetUserId: z.string(),
+  action: z.enum(['follow', 'unfollow']),
+});

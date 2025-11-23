@@ -1,7 +1,7 @@
 import type { Env, UserAccessLink, AccessPrincipal } from '../types';
 import { ApiError } from '../types';
 import { normalizeHandle, isUniqueConstraintError } from '../utils';
-import type { UserProfile } from '@board-app/shared';
+import type { UserProfile, BoardAlias } from '@board-app/shared';
 import { logger } from './logger';
 
 const PSEUDONYM_MIN = 3;
@@ -127,7 +127,7 @@ async function createUserWithUniquePseudonym(env: Env, basePseudonym: string): P
     throw new ApiError(500, { error: 'failed to create unique pseudonym' });
 }
 
-function deriveAccessPseudonym(principal: AccessPrincipal): string {
+export function deriveAccessPseudonym(principal: AccessPrincipal): string {
     const emailLocal = principal?.email?.split('@')[0] ?? '';
     const subjectFragment = principal?.subject?.split('/').at(-1) ?? principal?.subject ?? '';
     const source = emailLocal || subjectFragment;
@@ -325,4 +325,80 @@ export async function ensureAccessPrincipalForUser(
     if (principal.email && principal.email !== existingLink.email) {
         await upsertAccessLink(env, subject, userId, principal.email);
     }
+}
+
+type BoardAliasRecord = {
+    id: string;
+    board_id: string;
+    user_id: string;
+    alias: string;
+    alias_normalized: string;
+    created_at: number;
+};
+
+export async function listAliasesForUser(env: Env, userId: string, limit = 100): Promise<BoardAlias[]> {
+    const { results } = await env.BOARD_DB.prepare(
+        'SELECT id, board_id, user_id, alias, alias_normalized, created_at FROM board_aliases WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
+    )
+        .bind(userId, Math.max(1, Math.min(limit, 200)))
+        .all<BoardAliasRecord>();
+
+    return (results ?? []).map(record => ({
+        id: record.id,
+        boardId: record.board_id,
+        userId: record.user_id,
+        alias: record.alias,
+        aliasNormalized: record.alias_normalized,
+        createdAt: record.created_at
+    }));
+}
+
+export async function getFollowCounts(env: Env, userId: string): Promise<{ followerCount: number; followingCount: number }> {
+    const followerRow = await env.BOARD_DB.prepare('SELECT COUNT(*) AS follower_count FROM follows WHERE following_id = ?')
+        .bind(userId)
+        .first<{ follower_count: number | null }>();
+    const followingRow = await env.BOARD_DB.prepare('SELECT COUNT(*) AS following_count FROM follows WHERE follower_id = ?')
+        .bind(userId)
+        .first<{ following_count: number | null }>();
+
+    return {
+        followerCount: followerRow?.follower_count ?? 0,
+        followingCount: followingRow?.following_count ?? 0
+    };
+}
+
+export async function isFollowing(env: Env, followerId: string, targetId: string): Promise<boolean> {
+    const existing = await env.BOARD_DB.prepare(
+        'SELECT 1 FROM follows WHERE follower_id = ?1 AND following_id = ?2 LIMIT 1'
+    )
+        .bind(followerId, targetId)
+        .first<number>();
+    return Boolean(existing);
+}
+
+export async function listFollowingIds(env: Env, userId: string, limit = 50): Promise<string[]> {
+    const { results } = await env.BOARD_DB.prepare(
+        'SELECT following_id FROM follows WHERE follower_id = ? ORDER BY created_at DESC LIMIT ?'
+    )
+        .bind(userId, Math.max(1, Math.min(limit, 200)))
+        .all<{ following_id: string }>();
+    return (results ?? []).map(row => row.following_id);
+}
+
+export async function setFollowState(env: Env, followerId: string, targetId: string, follow: boolean): Promise<boolean> {
+    if (follow) {
+        await env.BOARD_DB.prepare(
+            `INSERT INTO follows (follower_id, following_id, created_at)
+         VALUES (?1, ?2, ?3)
+       ON CONFLICT(follower_id, following_id) DO NOTHING`
+        )
+            .bind(followerId, targetId, Date.now())
+            .run();
+        return true;
+    }
+
+    await env.BOARD_DB.prepare('DELETE FROM follows WHERE follower_id = ?1 AND following_id = ?2')
+        .bind(followerId, targetId)
+        .run();
+    return false;
 }
