@@ -28,4 +28,4 @@ new_classes = ["BoardRoomDO"]
 [[d1_databases]]
 binding = "BOARD_DB"
 database_name = "board-db"
-database_id = "local-board-db"
+database_id = "75ac8ef7-8c9d-4246-9508-e454d3dc3a4f"
