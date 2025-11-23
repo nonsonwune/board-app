@@ -1,4 +1,3 @@
-import schemaSql from './schema.sql';
 import { Hono } from 'hono';
 import authRoutes from './routes/auth';
 import { BoardRoom, type BoardWebSocket } from './board-room';
@@ -11,21 +10,16 @@ import type {
   BoardSpace,
   BoardReply,
   ListRepliesResponse,
-  CreateReplyRequest,
   CreateReplyResponse,
   FollowingFeedResponse,
   FollowRequest,
   FollowResponse,
   ProfileSummary,
   SearchPostsResponse,
-  CreatePostRequest,
   CreatePostResponse,
-  RegisterIdentityRequest,
   RegisterIdentityResponse,
-  UpsertAliasRequest,
   UpsertAliasResponse,
   GetAliasResponse,
-  UpdateReactionRequest,
   UpdateReactionResponse,
   ReactionSummary,
   ReactionAction,
@@ -68,8 +62,6 @@ const boardRooms = new Map<string, BoardRoom>();
 
 const PSEUDONYM_MIN = 3;
 const PSEUDONYM_MAX = 20;
-const ALIAS_MIN = 3;
-const ALIAS_MAX = 24;
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
 const TIME_DECAY_HALF_LIFE_MS = 24 * 60 * 60 * 1000;
 const VELOCITY_DECAY_MS = 90 * 60 * 1000;

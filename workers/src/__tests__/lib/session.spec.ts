@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import {
     issueSessionTicket,
     getSessionByToken,
@@ -8,7 +8,7 @@ import type { Env } from '../../types';
 
 describe('Session Management', () => {
     let env: Env;
-    let mockSessions: Map<string, any>;
+    let mockSessions: Map<string, unknown>;
 
     beforeEach(() => {
         mockSessions = new Map();
@@ -16,7 +16,7 @@ describe('Session Management', () => {
         env = {
             BOARD_DB: {
                 prepare: (sql: string) => ({
-                    bind: (...params: any[]) => ({
+                    bind: (...params: unknown[]) => ({
                         run: async () => {
                             // Mock INSERT INTO sessions
                             if (sql.includes('INSERT INTO sessions')) {

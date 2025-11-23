@@ -4,7 +4,7 @@ import type { Env } from '../../types';
 
 describe('User Management', () => {
     let env: Env;
-    let mockUsers: Map<string, any>;
+    let mockUsers: Map<string, unknown>;
 
     beforeEach(() => {
         mockUsers = new Map();
@@ -12,7 +12,7 @@ describe('User Management', () => {
         env = {
             BOARD_DB: {
                 prepare: (sql: string) => ({
-                    bind: (...params: any[]) => ({
+                    bind: (...params: unknown[]) => ({
                         run: async () => {
                             // Mock INSERT INTO users
                             if (sql.includes('INSERT INTO users')) {

@@ -1,5 +1,4 @@
 import { execSync } from 'node:child_process';
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,7 +26,7 @@ function runCommand(command: string) {
     try {
         execSync(command, { stdio: 'inherit' });
         return true;
-    } catch (error) {
+    } catch {
         return false;
     }
 }

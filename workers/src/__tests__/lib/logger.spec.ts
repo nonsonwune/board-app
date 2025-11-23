@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { logger, createRequestLogger, type LogContext } from '../../lib/logger';
+import { logger, createRequestLogger } from '../../lib/logger';
 
 describe('Logger', () => {
     describe('logger.info', () => {

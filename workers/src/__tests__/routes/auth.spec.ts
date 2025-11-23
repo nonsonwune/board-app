@@ -19,8 +19,8 @@ describe('Auth Routes - Integration', () => {
                     })
                 }),
                 exec: async () => ({ count: 0, duration: 0 })
-            } as any,
-            BOARD_ROOM_DO: {} as any,
+            } as unknown as Env['BOARD_DB'],
+            BOARD_ROOM_DO: {} as unknown as Env['BOARD_ROOM_DO'],
             ACCESS_JWT_AUDIENCE: 'test-audience',
             ACCESS_JWT_ISSUER: 'https://test.cloudflareaccess.com',
         };
