@@ -42,8 +42,8 @@ describe('Session Management', () => {
                         }
                     })
                 })
-            } as any,
-            BOARD_ROOM_DO: {} as any,
+            } as unknown as Env['BOARD_DB'],
+            BOARD_ROOM_DO: {} as unknown as Env['BOARD_ROOM_DO'],
         };
     });
 

@@ -80,7 +80,7 @@ async function getCryptoKeyFromJwks(config: AccessJwtConfig, header: { kid?: str
     }
 
     const jwks = await fetchJwks(config);
-    const jwk = jwks.find(key => (key as any).kid === kid);
+    const jwk = jwks.find(key => (key as JsonWebKey & { kid?: string }).kid === kid);
     if (!jwk) {
         throw new ApiError(401, { error: 'untrusted access key' });
     }
