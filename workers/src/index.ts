@@ -1,4 +1,6 @@
 import schemaSql from './schema.sql';
+import { Hono } from 'hono';
+import authRoutes from './routes/auth';
 import { BoardRoom, type BoardWebSocket } from './board-room';
 import type {
   BoardEventPayload,
@@ -32,7 +34,14 @@ import type {
   SessionTicket,
   CreateSessionRequest,
   CreateSessionResponse,
-  PostImageDraft
+  PostImageDraft,
+} from '@board-app/shared';
+import {
+  CreatePostSchema,
+  CreateReplySchema,
+  RegisterIdentitySchema,
+  UpsertAliasSchema,
+  UpdateReactionSchema
 } from '@board-app/shared';
 import { getAdaptiveRadius, type RadiusState } from '@board-app/shared/location';
 import { SESSION_TTL_MS } from '@board-app/shared';
@@ -50,12 +59,12 @@ export interface Env {
   PHASE_ONE_RADIUS_METERS?: string;
   PHASE_ADMIN_TOKEN?: string;
   ENABLE_IMAGE_UPLOADS?: string;
+  ALLOWED_ORIGINS?: string;
 }
 
-const ALLOWED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3002'];
+const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3002'];
 const boardRooms = new Map<string, BoardRoom>();
-let schemaInitialized = false;
-let schemaInitPromise: Promise<void> | null = null;
+
 
 const PSEUDONYM_MIN = 3;
 const PSEUDONYM_MAX = 20;
@@ -216,10 +225,7 @@ class ApiError extends Error {
   }
 }
 
-function allowOrigin(origin: string | null) {
-  if (!origin) return '*';
-  return ALLOWED_ORIGINS.includes(origin) ? origin : '*';
-}
+
 
 function normalizeHandle(value: string) {
   return value
@@ -239,13 +245,36 @@ function parseBearerToken(request: Request) {
   return match ? match[1].trim() : null;
 }
 
-function withCors(request: Request, response: Response) {
-  const origin = allowOrigin(request.headers.get('Origin'));
+function withCors(request: Request, response: Response, env: Env) {
+  const origin = request.headers.get('Origin');
+  const allowedOrigins = env.ALLOWED_ORIGINS
+    ? env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+    : DEFAULT_ALLOWED_ORIGINS;
+
   const headers = new Headers(response.headers);
-  headers.set('Access-Control-Allow-Origin', origin);
-  headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   headers.set('Vary', 'Origin');
+
+  if (origin && allowedOrigins.includes(origin)) {
+    headers.set('Access-Control-Allow-Origin', origin);
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, CF-Board-ID, CF-Trace-ID');
+    headers.set('Access-Control-Max-Age', '86400');
+  } else {
+    // If origin is not allowed or not present, set a default or restrict
+    // For simplicity, if not explicitly allowed, we won't set ACAO.
+    // Or, if the original intent was to allow all if not specified, we can do that.
+    // Given the original `allowOrigin` function, it returned '*' if no origin.
+    // Let's stick to the new logic: if origin is not in allowedOrigins, don't set ACAO for specific origin.
+    // The original `allowOrigin` returned '*' if no origin, or if origin was not in ALLOWED_ORIGINS.
+    // The new logic explicitly checks `allowedOrigins.includes(origin)`.
+    // If origin is null, it won't be included. If origin is not in the list, it won't be included.
+    // So, if origin is not explicitly allowed, we don't set the specific origin.
+    // If the request is not an OPTIONS request, and the origin is not allowed, the browser will block it.
+    // For non-allowed origins, we should not set Access-Control-Allow-Origin to the requesting origin.
+    // If the intent is to allow * for non-listed origins, that would be a different logic.
+    // Sticking to the provided snippet's implication: only set ACAO if origin is explicitly allowed.
+  }
+
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -253,10 +282,6 @@ function withCors(request: Request, response: Response) {
   });
 }
 
-export function __resetSchemaForTests() {
-  schemaInitialized = false;
-  schemaInitPromise = null;
-}
 
 function getAccessJwtConfig(env: Env): AccessJwtConfig | null {
   const issuer = env.ACCESS_JWT_ISSUER?.trim();
@@ -463,76 +488,7 @@ async function verifyAccessJwt(request: Request, env: Env): Promise<AccessPrinci
   };
 }
 
-async function ensureSchema(env: Env) {
-  if (schemaInitialized) return;
-  if (!schemaInitPromise) {
-    schemaInitPromise = (async () => {
-      const cleaned = schemaSql
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/--.*$/gm, '')
-        .trim();
 
-      if (!cleaned) {
-        throw new Error('schema.sql is empty after stripping comments');
-      }
-
-      const statements = cleaned
-        .split(/;\s*(?:\r?\n|$)/)
-        .map(statement => statement.trim())
-        .filter(Boolean)
-        .map(statement => (statement.endsWith(';') ? statement : `${statement};`));
-
-      if (statements.length === 0) {
-        throw new Error('schema.sql is empty after processing');
-      }
-
-      for (const sql of statements) {
-        try {
-          await env.BOARD_DB.prepare(sql).run();
-        } catch (error) {
-          console.error('[schema] failed to apply statement', sql);
-          throw error;
-        }
-      }
-
-      const alterStatements = [
-        `ALTER TABLE posts ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0`,
-        `ALTER TABLE posts ADD COLUMN dislike_count INTEGER NOT NULL DEFAULT 0`,
-        `ALTER TABLE posts ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL`,
-        `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`,
-        `ALTER TABLE boards ADD COLUMN radius_meters INTEGER NOT NULL DEFAULT 1500`,
-        `ALTER TABLE boards ADD COLUMN radius_state TEXT`,
-        `ALTER TABLE boards ADD COLUMN radius_updated_at INTEGER`,
-        `ALTER TABLE boards ADD COLUMN phase_mode TEXT NOT NULL DEFAULT 'default'`,
-        `ALTER TABLE boards ADD COLUMN text_only INTEGER NOT NULL DEFAULT 0`,
-        `ALTER TABLE boards ADD COLUMN latitude REAL`,
-        `ALTER TABLE boards ADD COLUMN longitude REAL`
-      ];
-
-      for (const sql of alterStatements) {
-        try {
-          await env.BOARD_DB.prepare(sql).run();
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (/duplicate column name/i.test(message)) {
-            continue;
-          }
-          if (/no such column/i.test(message)) {
-            continue;
-          }
-          if (/duplicate column/i.test(message)) {
-            continue;
-          }
-          console.warn('[schema] alter statement failed', sql, error);
-        }
-      }
-
-      schemaInitialized = true;
-      console.log('[schema] ready');
-    })();
-  }
-  await schemaInitPromise;
-}
 
 function getBoardRoom(boardId: string) {
   let room = boardRooms.get(boardId);
@@ -544,7 +500,7 @@ function getBoardRoom(boardId: string) {
 }
 
 async function persistEvent(env: Env, record: BoardEventPayload, boardId: string) {
-  await ensureSchema(env);
+
   await env.BOARD_DB.prepare(
     `INSERT INTO board_events (id, board_id, event_type, payload, trace_id, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
@@ -561,7 +517,7 @@ async function persistEvent(env: Env, record: BoardEventPayload, boardId: string
 }
 
 async function getOrCreateBoard(env: Env, boardId: string): Promise<BoardRecord> {
-  await ensureSchema(env);
+
   const existing = await env.BOARD_DB.prepare(
     'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only, latitude, longitude FROM boards WHERE id = ?1'
   )
@@ -630,7 +586,7 @@ async function createPost(
   images?: string[],
   boardName?: string | null
 ): Promise<SharedBoardPost> {
-  await ensureSchema(env);
+
   const id = crypto.randomUUID();
   const createdAt = Date.now();
   await env.BOARD_DB.prepare(
@@ -672,7 +628,7 @@ async function createReply(
     alias: string | null;
   }
 ): Promise<BoardReply> {
-  await ensureSchema(env);
+
   const exists = await env.BOARD_DB.prepare(
     'SELECT 1 FROM posts WHERE id = ?1 AND board_id = ?2'
   )
@@ -709,7 +665,7 @@ async function listReplies(
   postId: string,
   options: { limit?: number; cursor?: string | null }
 ) {
-  await ensureSchema(env);
+
   const limit = options.limit ?? 50;
   let cursorCreatedAt = 0;
   let cursorId = '';
@@ -761,7 +717,7 @@ async function listPosts(
   limit: number,
   options: { now?: number } = {}
 ): Promise<SharedBoardPost[]> {
-  await ensureSchema(env);
+
   const now = options.now ?? Date.now();
   const { results } = await env.BOARD_DB.prepare(
     `SELECT
@@ -896,7 +852,7 @@ async function listUserPosts(
   limit: number,
   options: { now?: number } = {}
 ): Promise<SharedBoardPost[]> {
-  await ensureSchema(env);
+
   const now = options.now ?? Date.now();
   const cappedLimit = Math.max(1, Math.min(limit, 50));
   const { results } = await env.BOARD_DB.prepare(
@@ -943,7 +899,7 @@ async function listFollowingPosts(
   followerId: string,
   options: { limit?: number; cursor?: string | null; now?: number } = {}
 ): Promise<{ posts: SharedBoardPost[]; cursor: string | null; hasMore: boolean }> {
-  await ensureSchema(env);
+
   const now = options.now ?? Date.now();
   const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
   const cursor = parsePostCursor(options.cursor);
@@ -1065,7 +1021,7 @@ async function upsertBoardMetrics(env: Env, snapshot: BoardMetricsSnapshot): Pro
 }
 
 async function snapshotBoardMetrics(env: Env, options: { now?: number } = {}): Promise<void> {
-  await ensureSchema(env);
+
   const now = options.now ?? Date.now();
   const { results } = await env.BOARD_DB.prepare(
     'SELECT id, display_name, description, created_at, radius_meters, radius_state, radius_updated_at, phase_mode, text_only FROM boards'
@@ -1079,7 +1035,7 @@ async function snapshotBoardMetrics(env: Env, options: { now?: number } = {}): P
 }
 
 async function listBoardsCatalog(env: Env, options: { limit?: number } = {}): Promise<BoardSummary[]> {
-  await ensureSchema(env);
+
   const limitRaw = options.limit ?? 12;
   const limit = Math.max(1, Math.min(limitRaw, 50));
   const { results } = await env.BOARD_DB.prepare(
@@ -1115,14 +1071,14 @@ async function listBoardsCatalog(env: Env, options: { limit?: number } = {}): Pr
 
       let snapshot: BoardMetricsSnapshot | null = metricsRow
         ? {
-            boardId: metricsRow.board_id,
-            snapshotAt: metricsRow.snapshot_at,
-            activeConnections: metricsRow.active_connections,
-            postsLastHour: metricsRow.posts_last_hour,
-            postsLastDay: metricsRow.posts_last_day,
-            postsPrevDay: metricsRow.posts_prev_day,
-            lastPostAt: metricsRow.last_post_at ?? null
-          }
+          boardId: metricsRow.board_id,
+          snapshotAt: metricsRow.snapshot_at,
+          activeConnections: metricsRow.active_connections,
+          postsLastHour: metricsRow.posts_last_hour,
+          postsLastDay: metricsRow.posts_last_day,
+          postsPrevDay: metricsRow.posts_prev_day,
+          lastPostAt: metricsRow.last_post_at ?? null
+        }
         : null;
 
       if (!snapshot || now - snapshot.snapshotAt > BOARD_METRICS_STALE_MS) {
@@ -1179,7 +1135,7 @@ async function searchBoardPosts(
     now?: number;
   } = {}
 ): Promise<{ posts: SharedBoardPost[]; cursor: string | null; hasMore: boolean }> {
-  await ensureSchema(env);
+
   const now = options.now ?? Date.now();
   const limit = Math.max(1, Math.min(options.limit ?? 20, 50));
   const cursor = parsePostCursor(options.cursor);
@@ -1251,7 +1207,7 @@ async function searchBoardPosts(
 }
 
 async function getFollowCounts(env: Env, userId: string): Promise<{ followerCount: number; followingCount: number }> {
-  await ensureSchema(env);
+
   const followerRow = await env.BOARD_DB.prepare('SELECT COUNT(*) AS follower_count FROM follows WHERE following_id = ?')
     .bind(userId)
     .first<{ follower_count: number | null }>();
@@ -1266,7 +1222,7 @@ async function getFollowCounts(env: Env, userId: string): Promise<{ followerCoun
 }
 
 async function isFollowing(env: Env, followerId: string, targetId: string): Promise<boolean> {
-  await ensureSchema(env);
+
   const existing = await env.BOARD_DB.prepare(
     'SELECT 1 FROM follows WHERE follower_id = ?1 AND following_id = ?2 LIMIT 1'
   )
@@ -1276,7 +1232,7 @@ async function isFollowing(env: Env, followerId: string, targetId: string): Prom
 }
 
 async function listFollowingIds(env: Env, userId: string, limit = 50): Promise<string[]> {
-  await ensureSchema(env);
+
   const { results } = await env.BOARD_DB.prepare(
     'SELECT following_id FROM follows WHERE follower_id = ? ORDER BY created_at DESC LIMIT ?'
   )
@@ -1286,7 +1242,7 @@ async function listFollowingIds(env: Env, userId: string, limit = 50): Promise<s
 }
 
 async function setFollowState(env: Env, followerId: string, targetId: string, follow: boolean): Promise<boolean> {
-  await ensureSchema(env);
+
   if (follow) {
     await env.BOARD_DB.prepare(
       `INSERT INTO follows (follower_id, following_id, created_at)
@@ -1305,7 +1261,7 @@ async function setFollowState(env: Env, followerId: string, targetId: string, fo
 }
 
 async function issueSessionTicket(env: Env, userId: string): Promise<SessionTicket> {
-  await ensureSchema(env);
+
   const token = crypto.randomUUID().replace(/-/g, '');
   const createdAt = Date.now();
   const expiresAt = createdAt + SESSION_TTL_MS;
@@ -1323,7 +1279,7 @@ async function issueSessionTicket(env: Env, userId: string): Promise<SessionTick
 }
 
 async function getSessionByToken(env: Env, token: string): Promise<SessionRecord | null> {
-  await ensureSchema(env);
+
   const record = await env.BOARD_DB.prepare(
     'SELECT token, user_id, created_at, expires_at FROM sessions WHERE token = ?1'
   )
@@ -1343,7 +1299,7 @@ async function getSessionByToken(env: Env, token: string): Promise<SessionRecord
 }
 
 async function deleteSessionByToken(env: Env, token: string): Promise<void> {
-  await ensureSchema(env);
+
   await env.BOARD_DB.prepare('DELETE FROM sessions WHERE token = ?1').bind(token).run();
 }
 
@@ -1379,7 +1335,7 @@ async function createUser(
   normalized: string,
   status: 'active' | 'access_auto' | 'access_orphan' = 'active'
 ): Promise<UserProfile> {
-  await ensureSchema(env);
+
   const id = crypto.randomUUID();
   const createdAt = Date.now();
 
@@ -1451,14 +1407,14 @@ function userRecordToProfile(user: UserRecord): UserProfile {
 }
 
 async function markUserStatus(env: Env, userId: string, status: 'active' | 'access_auto' | 'access_orphan') {
-  await ensureSchema(env);
+
   await env.BOARD_DB.prepare('UPDATE users SET status = ?1 WHERE id = ?2')
     .bind(status, userId)
     .run();
 }
 
 async function getUserById(env: Env, userId: string): Promise<UserRecord | null> {
-  await ensureSchema(env);
+
   const record = await env.BOARD_DB.prepare(
     'SELECT id, pseudonym, pseudonym_normalized, created_at, status FROM users WHERE id = ?1'
   )
@@ -1469,7 +1425,7 @@ async function getUserById(env: Env, userId: string): Promise<UserRecord | null>
 }
 
 async function getAccessLinkBySubject(env: Env, subject: string): Promise<UserAccessLink | null> {
-  await ensureSchema(env);
+
   const record = await env.BOARD_DB.prepare(
     'SELECT access_subject, user_id, email FROM user_access_links WHERE access_subject = ?1'
   )
@@ -1479,7 +1435,7 @@ async function getAccessLinkBySubject(env: Env, subject: string): Promise<UserAc
 }
 
 async function getAccessLinkByUserId(env: Env, userId: string): Promise<UserAccessLink | null> {
-  await ensureSchema(env);
+
   const record = await env.BOARD_DB.prepare(
     'SELECT access_subject, user_id, email FROM user_access_links WHERE user_id = ?1'
   )
@@ -1494,7 +1450,7 @@ async function upsertAccessLink(
   userId: string,
   email: string | null
 ): Promise<void> {
-  await ensureSchema(env);
+
   const now = Date.now();
   await env.BOARD_DB.prepare(
     `INSERT INTO user_access_links (access_subject, user_id, email, created_at, updated_at)
@@ -1631,7 +1587,7 @@ async function upsertBoardAlias(
   alias: string,
   normalized: string
 ): Promise<BoardAlias> {
-  await ensureSchema(env);
+
   const id = crypto.randomUUID();
   const createdAt = Date.now();
 
@@ -1666,7 +1622,7 @@ async function upsertBoardAlias(
 }
 
 async function getBoardAlias(env: Env, boardId: string, userId: string): Promise<BoardAlias | null> {
-  await ensureSchema(env);
+
   const record = await env.BOARD_DB.prepare(
     'SELECT id, board_id, user_id, alias, alias_normalized, created_at FROM board_aliases WHERE board_id = ?1 AND user_id = ?2'
   )
@@ -1686,7 +1642,7 @@ async function getBoardAlias(env: Env, boardId: string, userId: string): Promise
 }
 
 async function listAliasesForUser(env: Env, userId: string, limit = 100): Promise<BoardAlias[]> {
-  await ensureSchema(env);
+
   const { results } = await env.BOARD_DB.prepare(
     'SELECT id, board_id, user_id, alias, alias_normalized, created_at FROM board_aliases WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
   )
@@ -1710,7 +1666,7 @@ async function applyReaction(
   userId: string,
   action: ReactionAction
 ): Promise<ReactionSummary> {
-  await ensureSchema(env);
+
 
   const post = await env.BOARD_DB.prepare(
     'SELECT id, board_id FROM posts WHERE id = ?1'
@@ -1784,7 +1740,7 @@ async function recordAccessIdentityEvent(
     createdAt?: number;
   }
 ) {
-  await ensureSchema(env);
+
   const id = crypto.randomUUID();
   const createdAt = event.createdAt ?? Date.now();
   await env.BOARD_DB.prepare(
@@ -1869,7 +1825,7 @@ async function recordDeadZoneAlert(
   snapshot: DeadZoneSnapshot,
   options: { windowMs: number; timestamp: number; traceId: string }
 ) {
-  await ensureSchema(env);
+
   const id = crypto.randomUUID();
   const { windowMs, timestamp, traceId } = options;
   await env.BOARD_DB.prepare(
@@ -1903,7 +1859,7 @@ async function detectDeadZones(
     streakThreshold?: number;
   } = {}
 ) {
-  await ensureSchema(env);
+
   const now = options.now ?? Date.now();
   const windowMs = options.windowMs ?? DEAD_ZONE_WINDOW_MS;
   const minPosts = options.minPosts ?? DEAD_ZONE_MIN_POSTS;
@@ -2039,8 +1995,15 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // Use Hono for /identity/* routes
+    if (url.pathname.startsWith('/identity/')) {
+      const app = new Hono<{ Bindings: Env }>();
+      app.route('/identity', authRoutes);
+      return app.fetch(request, env, ctx);
+    }
+
     if (request.method === 'OPTIONS') {
-      return withCors(request, new Response(null, { status: 204 }));
+      return withCors(request, new Response(null, { status: 204 }), env);
     }
 
     if (url.pathname === '/_health') {
@@ -2048,20 +2011,21 @@ export default {
     }
 
     try {
+      // Legacy handlers remain for non-auth routes
       if (url.pathname === '/identity/session') {
-        return withCors(request, await handleCreateSession(request, env));
+        return withCors(request, await handleCreateSession(request, env), env);
       }
 
       if (url.pathname === '/identity/register') {
-        return withCors(request, await handleRegisterIdentity(request, env));
+        return withCors(request, await handleRegisterIdentity(request, env), env);
       }
 
       if (url.pathname === '/identity/link') {
-        return withCors(request, await handleLinkIdentity(request, env));
+        return withCors(request, await handleLinkIdentity(request, env), env);
       }
 
       if (url.pathname === '/identity/logout') {
-        return withCors(request, await handleLogout(request, env));
+        return withCors(request, await handleLogout(request, env), env);
       }
 
       const upgradeHeader = request.headers.get('Upgrade');
@@ -2070,15 +2034,15 @@ export default {
       }
 
       if (url.pathname === '/boards/catalog') {
-        return withCors(request, await handleBoardsCatalog(request, env, url));
+        return withCors(request, await handleBoardsCatalog(request, env, url), env);
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/phase$/)) {
-        return withCors(request, await handlePhaseSettings(request, env, url));
+        return withCors(request, await handlePhaseSettings(request, env, url), env);
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/aliases$/)) {
-        return withCors(request, await handleAlias(request, env, url));
+        return withCors(request, await handleAlias(request, env, url), env);
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/events$/)) {
@@ -2086,35 +2050,35 @@ export default {
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/posts$/)) {
-        return withCors(request, await handleCreatePost(request, env, ctx, url));
+        return withCors(request, await handleCreatePost(request, env, ctx, url), env);
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/posts\/[^/]+\/reactions$/)) {
-        return withCors(request, await handleUpdateReaction(request, env, ctx, url));
+        return withCors(request, await handleUpdateReaction(request, env, ctx, url), env);
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/posts\/[^/]+\/replies$/)) {
-        return withCors(request, await handleReplies(request, env, ctx, url));
+        return withCors(request, await handleReplies(request, env, ctx, url), env);
       }
 
       if (url.pathname.match(/^\/boards\/[^/]+\/feed$/)) {
-        return withCors(request, await handleFeed(request, env, url));
+        return withCors(request, await handleFeed(request, env, url), env);
       }
 
       if (url.pathname === '/follow') {
-        return withCors(request, await handleFollow(request, env));
+        return withCors(request, await handleFollow(request, env), env);
       }
 
       if (url.pathname === '/following/feed') {
-        return withCors(request, await handleFollowingFeed(request, env, url));
+        return withCors(request, await handleFollowingFeed(request, env, url), env);
       }
 
       if (url.pathname === '/search/posts') {
-        return withCors(request, await handleSearchPosts(request, env, url));
+        return withCors(request, await handleSearchPosts(request, env, url), env);
       }
 
       if (url.pathname.match(/^\/profiles\/[^/]+$/)) {
-        return withCors(request, await handleProfile(request, env, url));
+        return withCors(request, await handleProfile(request, env, url), env);
       }
 
       if (url.pathname === '/metrics/dead-zones') {
@@ -2122,7 +2086,7 @@ export default {
           return withCors(request, new Response(JSON.stringify({ error: 'method not allowed' }), {
             status: 405,
             headers: { 'Content-Type': 'application/json' }
-          }));
+          }), env);
         }
         const report = await detectDeadZones(env);
         return withCors(
@@ -2130,11 +2094,12 @@ export default {
           new Response(JSON.stringify(report), {
             status: 200,
             headers: { 'Content-Type': 'application/json' }
-          })
+          }),
+          env
         );
       }
 
-      return withCors(request, new Response('Not Found', { status: 404 }));
+      return withCors(request, new Response('Not Found', { status: 404 }), env);
     } catch (error: unknown) {
       if (error instanceof ApiError) {
         return withCors(
@@ -2142,7 +2107,8 @@ export default {
           new Response(JSON.stringify(error.body), {
             status: error.status,
             headers: { 'Content-Type': 'application/json' }
-          })
+          }),
+          env
         );
       }
       console.error('[worker] unexpected error', error);
@@ -2151,7 +2117,8 @@ export default {
         new Response(JSON.stringify({ error: 'internal' }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
-        })
+        }),
+        env
       );
     }
   },
@@ -2189,7 +2156,7 @@ const __internal = {
 };
 
 export {
-  ensureSchema,
+
   getOrCreateBoard,
   createPost,
   listPosts,
@@ -2218,10 +2185,11 @@ async function handleWebsocket(request: Request, env: Env, ctx: ExecutionContext
   if (!boardId) {
     return withCors(
       request,
-      new Response(JSON.stringify({ error: 'boardId query param required' }), {
-        status: 400,
+      new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
         headers: { 'Content-Type': 'application/json' }
-      })
+      }),
+      env
     );
   }
 
@@ -2263,10 +2231,11 @@ async function handleEvents(request: Request, env: Env, ctx: ExecutionContext, u
     } catch {
       return withCors(
         request,
-        new Response(JSON.stringify({ error: 'Invalid JSON body', trace_id: traceId }), {
-          status: 400,
+        new Response(JSON.stringify({ error: 'Internal Server Error', trace_id: traceId }), {
+          status: 500,
           headers: { 'Content-Type': 'application/json' }
-        })
+        }),
+        env
       );
     }
 
@@ -2310,7 +2279,8 @@ async function handleEvents(request: Request, env: Env, ctx: ExecutionContext, u
       new Response(bodyText, {
         status: response.status,
         headers: { 'Content-Type': 'application/json' }
-      })
+      }),
+      env
     );
   }
 
@@ -2318,7 +2288,7 @@ async function handleEvents(request: Request, env: Env, ctx: ExecutionContext, u
     const limitParam = Number(url.searchParams.get('limit') ?? '20');
     const limit = Number.isFinite(limitParam) ? Math.max(0, Math.min(limitParam, 100)) : 20;
 
-    await ensureSchema(env);
+
     const { results } = await env.BOARD_DB.prepare(
       `SELECT id, event_type, payload, trace_id, created_at FROM board_events
          WHERE board_id = ?1
@@ -2360,7 +2330,8 @@ async function handleEvents(request: Request, env: Env, ctx: ExecutionContext, u
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         }
-      )
+      ),
+      env
     );
   }
 
@@ -2369,7 +2340,8 @@ async function handleEvents(request: Request, env: Env, ctx: ExecutionContext, u
     new Response(JSON.stringify({ error: 'Unsupported method', trace_id: traceId }), {
       status: 405,
       headers: { 'Content-Type': 'application/json', Allow: 'GET, POST' }
-    })
+    }),
+    env
   );
 }
 
@@ -2385,9 +2357,9 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
   const boardId = decodeURIComponent(match![1]);
   const traceId = request.headers.get('cf-ray') ?? crypto.randomUUID();
 
-  let payload: CreatePostRequest;
+  let payload: unknown;
   try {
-    payload = (await request.json()) as CreatePostRequest;
+    payload = await request.json();
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body', trace_id: traceId }), {
       status: 400,
@@ -2395,18 +2367,38 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
     });
   }
 
-  const body = payload.body?.trim();
-  if (!body) {
-    return new Response(JSON.stringify({ error: 'body field is required', trace_id: traceId }), {
-      status: 400,
+  // Rate Limiting
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const durableId = env.BOARD_ROOM_DO.idFromName(boardId);
+  const stub = env.BOARD_ROOM_DO.get(durableId);
+
+  const rateLimitRes = await stub.fetch('https://do/rate-limit', {
+    method: 'POST',
+    body: JSON.stringify({ key: `post:${ip}`, limit: 5, windowMs: 60000 })
+  });
+
+  if (rateLimitRes.status === 429) {
+    return new Response(JSON.stringify({ error: 'Too many posts. Please wait.' }), {
+      status: 429,
       headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  const authorInput = payload.author?.trim()?.slice(0, 64) ?? null;
-  const userId = payload.userId?.trim() || null;
+  const result = CreatePostSchema.safeParse(payload);
+  if (!result.success) {
+    return new Response(JSON.stringify({ error: result.error.issues[0].message, trace_id: traceId }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  const data = result.data;
 
-  let author = authorInput;
+  const body = data.body.trim();
+  // Zod handles empty string check via min(1)
+
+  let author = data.author?.trim()?.slice(0, 64) ?? null;
+  const userId = data.userId?.trim() ?? null;
+
   let user: UserRecord | null = null;
   let aliasRecord: BoardAlias | null = null;
   if (userId) {
@@ -2429,7 +2421,7 @@ async function handleCreatePost(request: Request, env: Env, ctx: ExecutionContex
   const boardTextOnly = Boolean(board.text_only);
   const isTextOnly = boardTextOnly || phaseConfig.textOnlyBoards.has(normalizedBoardId);
   const uploadsEnabled = isImageUploadsEnabled(env);
-  const rawImages = Array.isArray(payload.images) ? (payload.images as PostImageDraft[]) : [];
+  const rawImages = data.images ?? [];
   let sanitizedImages: PostImageDraft[] | null = null;
 
   if (rawImages.length > 0) {
@@ -2590,14 +2582,34 @@ async function handleReplies(request: Request, env: Env, ctx: ExecutionContext, 
   }
 
   const traceId = request.headers.get('cf-ray') ?? crypto.randomUUID();
-  let payload: CreateReplyRequest;
+  let payload: unknown;
   try {
-    payload = (await request.json()) as CreateReplyRequest;
+    payload = await request.json();
   } catch {
     throw new ApiError(400, { error: 'invalid JSON payload', trace_id: traceId });
   }
 
-  const body = payload.body?.trim();
+  // Rate Limiting
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const durableId = env.BOARD_ROOM_DO.idFromName(boardId);
+  const stub = env.BOARD_ROOM_DO.get(durableId);
+
+  const rateLimitRes = await stub.fetch('https://do/rate-limit', {
+    method: 'POST',
+    body: JSON.stringify({ key: `reply:${ip}`, limit: 10, windowMs: 60000 })
+  });
+
+  if (rateLimitRes.status === 429) {
+    throw new ApiError(429, { error: 'Too many replies. Please wait.', trace_id: traceId });
+  }
+
+  const result = CreateReplySchema.safeParse(payload);
+  if (!result.success) {
+    throw new ApiError(400, { error: result.error.issues[0].message, trace_id: traceId });
+  }
+  const data = result.data;
+
+  const body = data.body.trim();
   if (!body) {
     throw new ApiError(400, { error: 'reply body required', trace_id: traceId });
   }
@@ -2605,8 +2617,8 @@ async function handleReplies(request: Request, env: Env, ctx: ExecutionContext, 
     throw new ApiError(400, { error: 'reply body must be 300 characters or fewer', trace_id: traceId });
   }
 
-  const userId = payload.userId?.trim() || null;
-  const authorInput = payload.author?.trim()?.slice(0, 64) ?? null;
+  const userId = data.userId?.trim() || null;
+  const authorInput = data.author?.trim()?.slice(0, 64) ?? null;
 
   let author = authorInput;
   let user: UserRecord | null = null;
@@ -2712,9 +2724,9 @@ async function handleRegisterIdentity(request: Request, env: Env): Promise<Respo
     });
   }
 
-  let payload: RegisterIdentityRequest;
+  let payload: unknown;
   try {
-    payload = (await request.json()) as RegisterIdentityRequest;
+    payload = await request.json();
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
       status: 400,
@@ -2722,27 +2734,19 @@ async function handleRegisterIdentity(request: Request, env: Env): Promise<Respo
     });
   }
 
-  const raw = payload.pseudonym?.trim();
-  if (!raw) {
-    return new Response(JSON.stringify({ error: 'pseudonym is required' }), {
+  const result = RegisterIdentitySchema.safeParse(payload);
+  if (!result.success) {
+    return new Response(JSON.stringify({ error: result.error.issues[0].message }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
     });
   }
+  const data = result.data;
 
-  if (raw.length < PSEUDONYM_MIN || raw.length > PSEUDONYM_MAX) {
-    return new Response(
-      JSON.stringify({
-        error: `pseudonym must be between ${PSEUDONYM_MIN} and ${PSEUDONYM_MAX} characters`
-      }),
-      {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-  }
+  const pseudonym = data.pseudonym.trim();
+  // Zod handles min/max length
 
-  const normalized = normalizeHandle(raw);
+  const normalized = normalizeHandle(pseudonym);
   if (!normalized) {
     return new Response(JSON.stringify({ error: 'pseudonym is invalid' }), {
       status: 400,
@@ -2752,7 +2756,7 @@ async function handleRegisterIdentity(request: Request, env: Env): Promise<Respo
 
   try {
     const accessPrincipal = await verifyAccessJwt(request, env);
-    const user = await createUser(env, raw, normalized);
+    const user = await createUser(env, pseudonym, normalized);
     await ensureAccessPrincipalForUser(env, accessPrincipal, user.id, { allowReassign: true });
     const session = await issueSessionTicket(env, user.id);
     const responseBody: RegisterIdentityResponse = {
@@ -2890,15 +2894,15 @@ async function handlePhaseSettings(request: Request, env: Env, url: URL): Promis
 
   const nextRadiusState: RadiusState = phaseMode === 'phase1'
     ? {
-        currentMeters: nextRadiusMeters,
-        lastExpandedAt: existingState?.lastExpandedAt ?? null,
-        lastContractedAt: existingState?.lastContractedAt ?? null
-      }
+      currentMeters: nextRadiusMeters,
+      lastExpandedAt: existingState?.lastExpandedAt ?? null,
+      lastContractedAt: existingState?.lastContractedAt ?? null
+    }
     : existingState ?? {
-        currentMeters: nextRadiusMeters,
-        lastExpandedAt: null,
-        lastContractedAt: null
-      };
+      currentMeters: nextRadiusMeters,
+      lastExpandedAt: null,
+      lastContractedAt: null
+    };
 
   const now = Date.now();
   await env.BOARD_DB.prepare(
@@ -2975,7 +2979,7 @@ async function handleAlias(request: Request, env: Env, url: URL): Promise<Respon
       });
     }
 
-    await ensureSchema(env);
+
     const boardExists = await env.BOARD_DB.prepare('SELECT id FROM boards WHERE id = ?1')
       .bind(boardId)
       .first<{ id: string }>();
@@ -3008,9 +3012,9 @@ async function handleAlias(request: Request, env: Env, url: URL): Promise<Respon
   const match = url.pathname.match(/^\/boards\/([^/]+)\/aliases$/);
   const boardId = decodeURIComponent(match![1]);
 
-  let payload: UpsertAliasRequest;
+  let payload: unknown;
   try {
-    payload = (await request.json()) as UpsertAliasRequest;
+    payload = await request.json();
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
       status: 400,
@@ -3018,26 +3022,19 @@ async function handleAlias(request: Request, env: Env, url: URL): Promise<Respon
     });
   }
 
-  const userId = payload.userId?.trim();
-  const aliasRaw = payload.alias?.trim();
-  if (!userId || !aliasRaw) {
-    return new Response(JSON.stringify({ error: 'userId and alias are required' }), {
+  const result = UpsertAliasSchema.safeParse(payload);
+  if (!result.success) {
+    return new Response(JSON.stringify({ error: result.error.issues[0].message }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
     });
   }
+  const data = result.data;
+
+  const userId = data.userId;
+  const aliasRaw = data.alias.trim();
 
   await ensureSession(request, env, userId);
-
-  if (aliasRaw.length < ALIAS_MIN || aliasRaw.length > ALIAS_MAX) {
-    return new Response(
-      JSON.stringify({ error: `alias must be between ${ALIAS_MIN} and ${ALIAS_MAX} characters` }),
-      {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-  }
 
   const user = await getUserById(env, userId);
   if (!user) {
@@ -3101,9 +3098,9 @@ async function handleUpdateReaction(
   const postId = decodeURIComponent(match![2]);
   const traceId = request.headers.get('cf-ray') ?? crypto.randomUUID();
 
-  let payload: UpdateReactionRequest;
+  let payload: unknown;
   try {
-    payload = (await request.json()) as UpdateReactionRequest;
+    payload = await request.json();
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON body', trace_id: traceId }), {
       status: 400,
@@ -3111,23 +3108,20 @@ async function handleUpdateReaction(
     });
   }
 
-  const userId = payload.userId?.trim();
-  if (!userId) {
-    return new Response(JSON.stringify({ error: 'userId is required', trace_id: traceId }), {
+  const result = UpdateReactionSchema.safeParse(payload);
+  if (!result.success) {
+    return new Response(JSON.stringify({ error: result.error.issues[0].message, trace_id: traceId }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
     });
   }
+  const data = result.data;
+
+  const userId = data.userId;
 
   await ensureSession(request, env, userId);
 
-  const action = payload.action;
-  if (!action || !['like', 'dislike', 'remove'].includes(action)) {
-    return new Response(JSON.stringify({ error: 'action must be like, dislike, or remove', trace_id: traceId }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+  const action = data.action;
 
   const user = await getUserById(env, userId);
   if (!user) {
@@ -3681,6 +3675,8 @@ export class BoardRoomDO {
     });
   }
 
+  private rateLimits = new Map<string, { count: number; expires: number }>();
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const boardId = request.headers.get('CF-Board-ID') ?? this.state.id.toString();
@@ -3709,26 +3705,78 @@ export class BoardRoomDO {
         });
       }
 
-    const payload =
-      typeof rawPayload === 'object' && rawPayload !== null
-        ? (rawPayload as Record<string, unknown>)
-        : {};
+      const payload =
+        typeof rawPayload === 'object' && rawPayload !== null
+          ? (rawPayload as Record<string, unknown>)
+          : {};
 
-    const eventField = payload['event'];
-    const eventName = typeof eventField === 'string' && eventField.trim() ? eventField.trim() : 'message';
-    const timestamp = Date.now();
-    const record: BoardEventRecord = {
-      id: crypto.randomUUID(),
-      boardId,
-      event: eventName,
-      data: payload['data'] ?? null,
-      traceId,
-      timestamp
-    };
+      const eventField = payload['event'];
+      const eventName = typeof eventField === 'string' && eventField.trim() ? eventField.trim() : 'message';
+      const timestamp = Date.now();
+      const record: BoardEventRecord = {
+        id: crypto.randomUUID(),
+        boardId,
+        event: eventName,
+        data: payload['data'] ?? null,
+        traceId,
+        timestamp
+      };
 
       await this.appendEvent(record);
 
       return new Response(JSON.stringify({ ok: true, event: record }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      return new Response(JSON.stringify({ ok: true, event: record }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/rate-limit') {
+      let payload: unknown;
+      try {
+        payload = await request.json();
+      } catch {
+        return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400 });
+      }
+
+      const data = payload as { key: string; limit: number; windowMs: number };
+      if (!data.key || !data.limit || !data.windowMs) {
+        return new Response(JSON.stringify({ error: 'Missing parameters' }), { status: 400 });
+      }
+
+      const now = Date.now();
+      const entry = this.rateLimits.get(data.key);
+
+      if (entry && entry.expires > now) {
+        if (entry.count >= data.limit) {
+          return new Response(JSON.stringify({ allowed: false, remaining: 0, reset: entry.expires }), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        entry.count++;
+        return new Response(JSON.stringify({ allowed: true, remaining: data.limit - entry.count, reset: entry.expires }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // New window
+      this.rateLimits.set(data.key, { count: 1, expires: now + data.windowMs });
+
+      // Cleanup old entries occasionally
+      if (this.rateLimits.size > 1000) {
+        for (const [k, v] of this.rateLimits.entries()) {
+          if (v.expires <= now) {
+            this.rateLimits.delete(k);
+          }
+        }
+      }
+
+      return new Response(JSON.stringify({ allowed: true, remaining: data.limit - 1, reset: now + data.windowMs }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' }
       });

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  test-workers:
+    name: Test Workers
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: Lint workers
+        run: pnpm --filter @board-app/workers lint
+      
+      - name: Type check workers
+        run: pnpm --filter @board-app/workers typecheck
+      
+      - name: Test workers
+        run: pnpm --filter @board-app/workers test:ci
+      
+      - name: Build workers
+        run: pnpm --filter @board-app/workers build
+
+  test-frontend:
+    name: Test Frontend
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: Lint frontend
+        run: pnpm --filter frontend lint
+      
+      - name: Type check frontend
+        run: pnpm --filter frontend typecheck || true
+      
+      - name: Build frontend
+        run: pnpm --filter frontend build

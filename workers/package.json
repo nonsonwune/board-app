@@ -8,7 +8,11 @@
     "dev:raw": "wrangler dev --config wrangler.toml",
     "kill-port": "node ./scripts/kill-worker-port.mjs",
     "lint": "eslint",
-    "test": "vitest --config vitest.config.ts --passWithNoTests"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --config vitest.config.ts --passWithNoTests",
+    "test:ci": "vitest run --config vitest.config.ts --passWithNoTests",
+    "migrate": "tsx scripts/migrate.ts",
+    "migrate:local": "tsx scripts/migrate.ts --local"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241112.0",
@@ -22,6 +26,8 @@
     "wrangler": "^4.44.0"
   },
   "dependencies": {
-    "@board-app/shared": "workspace:*"
+    "@board-app/shared": "workspace:*",
+    "hono": "^4.10.6",
+    "zod": "^4.1.12"
   }
 }

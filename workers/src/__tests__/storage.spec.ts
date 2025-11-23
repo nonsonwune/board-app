@@ -1,8 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import WorkerEntrypoint, {
-  __resetSchemaForTests,
-  ensureSchema,
+
   getOrCreateBoard,
   createPost,
   listBoardsCatalog,
@@ -34,7 +33,7 @@ type PreparedCall = {
 };
 
 class MockPrepared {
-  constructor(private readonly db: MockD1, public readonly sql: string) {}
+  constructor(private readonly db: MockD1, public readonly sql: string) { }
 
   bind(...params: any[]) {
     return new BoundPrepared(this.db, this.sql, params);
@@ -51,10 +50,24 @@ class MockPrepared {
   async first<T>() {
     return new BoundPrepared(this.db, this.sql, []).first<T>();
   }
+
+  async raw<T>(): Promise<T[]> {
+    return [];
+  }
+
 }
 
+
 class BoundPrepared {
-  constructor(private readonly db: MockD1, public readonly sql: string, private readonly params: any[]) {}
+  constructor(private readonly db: MockD1, public readonly sql: string, private readonly params: any[]) { }
+
+  bind(...params: any[]) {
+    return new BoundPrepared(this.db, this.sql, [...this.params, ...params]);
+  }
+
+  async raw<T>(): Promise<T[]> {
+    return [];
+  }
 
   async run() {
     this.db.prepareCalls.push({ sql: this.sql, params: this.params });
@@ -311,14 +324,28 @@ class BoundPrepared {
         entry => !(entry.follower_id === followerId && entry.following_id === followingId)
       );
     }
-    return { success: true };
+    return {
+      results: [],
+      success: true as const,
+      meta: {
+        duration: 0,
+        size: 0,
+        rows_read: 0,
+        rows_written: 0,
+        last_row_id: 0,
+        size_after: 0,
+        changed_db: false,
+        changes: 0,
+        served_by: 'mock'
+      }
+    };
   }
 
   async all<T>() {
     this.db.prepareCalls.push({ sql: this.sql, params: this.params });
     if (this.sql.startsWith('SELECT id FROM boards')) {
       const results = Array.from(this.db.boards.values()).map(board => ({ id: board.id }));
-      return { results: results as T[] };
+      return { results: results as T[], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
     }
     if (
       this.sql.includes('FROM boards') &&
@@ -329,15 +356,15 @@ class BoundPrepared {
       const rows = Array.from(this.db.boards.values())
         .sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0))
         .slice(0, limit);
-      return { results: rows as T[] };
+      return { results: rows as T[], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
     }
     if (this.sql.includes('FROM board_metrics')) {
       const rows = Array.from(this.db.boardMetrics.values());
-      return { results: rows as T[] };
+      return { results: rows as T[], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
     }
     if (this.sql.startsWith('SELECT id, display_name')) {
       const board = this.db.boards.get(this.params[0]);
-      return { results: board ? [board as T] : [] };
+      return { results: board ? [board as T] : [], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
     }
     if (this.sql.includes('FROM posts p')) {
       const rawLimit = Number(this.params[this.params.length - 1]) || this.db.posts.length;
@@ -403,7 +430,7 @@ class BoundPrepared {
         };
       });
 
-      return { results: limited as T[] };
+      return { results: limited as T[], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
     }
     if (this.sql.includes('FROM replies r')) {
       const boardId = this.params[0];
@@ -425,7 +452,7 @@ class BoundPrepared {
             pseudonym: user?.pseudonym ?? null
           };
         });
-      return { results: replies as T[] };
+      return { results: replies as T[], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
     }
     if (this.sql.startsWith('SELECT following_id FROM follows')) {
       const followerId = this.params[0];
@@ -435,9 +462,9 @@ class BoundPrepared {
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, limit)
         .map(entry => ({ following_id: entry.following_id }));
-      return { results: rows as T[] };
+      return { results: rows as T[], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
     }
-    return { results: [] as T[] };
+    return { results: [] as T[], success: true as const, meta: { duration: 0, size: 0, rows_read: 0, rows_written: 0, last_row_id: 0, size_after: 0, changed_db: false, changes: 0, served_by: 'mock' } };
   }
 
   async first<T>() {
@@ -568,6 +595,18 @@ class MockD1 {
   prepare(sql: string) {
     return new MockPrepared(this, sql);
   }
+
+  async batch<T>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
+    return [];
+  }
+
+  async dump(): Promise<ArrayBuffer> {
+    return new ArrayBuffer(0);
+  }
+
+  async withSession<T>(callback: (session: D1Database) => Promise<T>): Promise<T> {
+    return callback(this as unknown as D1Database);
+  }
 }
 
 describe('storage helpers', () => {
@@ -576,36 +615,28 @@ describe('storage helpers', () => {
   beforeEach(() => {
     env = {
       BOARD_DB: new MockD1(),
-      BOARD_ROOM_DO: {} as any,
+      BOARD_ROOM_DO: {
+        idFromName: (name: string) => ({ name, toString: () => name }),
+        get: (id: any) => ({
+          fetch: async () => new Response(JSON.stringify({ allowed: true }))
+        })
+      } as any,
       PHASE_ONE_BOARDS: undefined,
       PHASE_ONE_TEXT_ONLY_BOARDS: undefined,
       PHASE_ONE_RADIUS_METERS: undefined,
       PHASE_ADMIN_TOKEN: undefined,
       ENABLE_IMAGE_UPLOADS: undefined
     };
-    __resetSchemaForTests();
   });
 
-  it('initializes schema once', async () => {
-    await ensureSchema(env);
-    await ensureSchema(env);
-    const schemaCalls = env.BOARD_DB.prepareCalls.filter(call =>
-      call.sql.startsWith('CREATE TABLE') || call.sql.startsWith('CREATE INDEX')
-    );
-    expect(schemaCalls.length).toBeGreaterThanOrEqual(13);
-    expect(schemaCalls[0].sql).toContain('CREATE TABLE IF NOT EXISTS boards');
-    expect(schemaCalls.some(call => call.sql.includes('dead_zone_alerts'))).toBe(true);
-  });
+
+
 
   it('creates board on first request', async () => {
     const board = await getOrCreateBoard(env, 'demo-board');
     expect(board.display_name).toBe('Demo Board');
     const boardAgain = await getOrCreateBoard(env, 'demo-board');
     expect(boardAgain.id).toBe(board.id);
-    const schemaCalls = env.BOARD_DB.prepareCalls.filter(call =>
-      call.sql.startsWith('CREATE TABLE') || call.sql.startsWith('CREATE INDEX')
-    );
-    expect(schemaCalls.length).toBeGreaterThanOrEqual(13); // schema called once, includes dead-zone artifacts
   });
 
   it('lists boards catalog with limit and ordering', async () => {
@@ -984,7 +1015,7 @@ describe('storage helpers', () => {
       }
     } as ScheduledController;
     const ctx = {
-      waitUntil: (_promise: Promise<unknown>) => {}
+      waitUntil: (_promise: Promise<unknown>) => { }
     } as ExecutionContext;
 
     await worker.scheduled!(scheduledEvent, env, ctx);
@@ -1041,7 +1072,7 @@ describe('storage helpers', () => {
 
     const request = new Request('https://unit.test/boards/adaptive-board/feed');
     const ctx = {
-      waitUntil: (_promise: Promise<unknown>) => {}
+      waitUntil: (_promise: Promise<unknown>) => { }
     } as ExecutionContext;
     const response = await WorkerEntrypoint.fetch(request, env, ctx);
     expect(response.status).toBe(200);
@@ -1066,7 +1097,7 @@ describe('storage helpers', () => {
 
     const request = new Request('https://unit.test/boards/phase-one-board/feed');
     const ctx = {
-      waitUntil: (_promise: Promise<unknown>) => {}
+      waitUntil: (_promise: Promise<unknown>) => { }
     } as ExecutionContext;
     const response = await WorkerEntrypoint.fetch(request, env, ctx);
     expect(response.status).toBe(200);
@@ -1079,63 +1110,63 @@ describe('storage helpers', () => {
   });
 
 
-it('rejects image uploads when not enabled', async () => {
-  const request = new Request('https://unit.test/boards/image-guard/posts', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      body: 'Image attempt',
-      images: [{ name: 'test.jpg', type: 'image/jpeg', size: 1024 }]
-    })
+  it('rejects image uploads when not enabled', async () => {
+    const request = new Request('https://unit.test/boards/image-guard/posts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        body: 'Image attempt',
+        images: [{ name: 'test.jpg', type: 'image/jpeg', size: 1024 }]
+      })
+    });
+    const ctx = {
+      waitUntil: (_: Promise<unknown>) => { }
+    } as ExecutionContext;
+    const response = await WorkerEntrypoint.fetch(request, env, ctx);
+    expect(response.status).toBe(403);
+    const payload = await response.json();
+    expect(payload.error).toMatch(/image uploads are currently disabled/i);
   });
-  const ctx = {
-    waitUntil: (_: Promise<unknown>) => {}
-  } as ExecutionContext;
-  const response = await WorkerEntrypoint.fetch(request, env, ctx);
-  expect(response.status).toBe(403);
-  const payload = await response.json();
-  expect(payload.error).toMatch(/image uploads are currently disabled/i);
-});
 
-it('rejects image uploads for text-only boards', async () => {
-  env.PHASE_ONE_TEXT_ONLY_BOARDS = 'text-only-board';
-  env.ENABLE_IMAGE_UPLOADS = 'true';
+  it('rejects image uploads for text-only boards', async () => {
+    env.PHASE_ONE_TEXT_ONLY_BOARDS = 'text-only-board';
+    env.ENABLE_IMAGE_UPLOADS = 'true';
 
-  const request = new Request('https://unit.test/boards/text-only-board/posts', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      body: 'Hello',
-      images: [{ name: 'test.jpg', type: 'image/jpeg', size: 2048 }]
-    })
+    const request = new Request('https://unit.test/boards/text-only-board/posts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        body: 'Hello',
+        images: [{ name: 'test.jpg', type: 'image/jpeg', size: 2048 }]
+      })
+    });
+    const ctx = {
+      waitUntil: (_: Promise<unknown>) => { }
+    } as ExecutionContext;
+    const response = await WorkerEntrypoint.fetch(request, env, ctx);
+    expect(response.status).toBe(403);
+    const payload = await response.json();
+    expect(payload.error).toMatch(/disabled for this board/i);
   });
-  const ctx = {
-    waitUntil: (_: Promise<unknown>) => {}
-  } as ExecutionContext;
-  const response = await WorkerEntrypoint.fetch(request, env, ctx);
-  expect(response.status).toBe(403);
-  const payload = await response.json();
-  expect(payload.error).toMatch(/disabled for this board/i);
-});
 
-it('accepts valid image metadata when enabled', async () => {
-  env.ENABLE_IMAGE_UPLOADS = 'true';
+  it('accepts valid image metadata when enabled', async () => {
+    env.ENABLE_IMAGE_UPLOADS = 'true';
 
-  const request = new Request('https://unit.test/boards/media/posts', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      body: 'Post with image',
-      images: [{ id: 'hero', name: 'hero.jpg', type: 'image/jpeg', size: 409_600 }]
-    })
+    const request = new Request('https://unit.test/boards/media/posts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        body: 'Post with image',
+        images: [{ id: 'hero', name: 'hero.jpg', type: 'image/jpeg', size: 409_600 }]
+      })
+    });
+    const ctx = {
+      waitUntil: (_: Promise<unknown>) => { }
+    } as ExecutionContext;
+    const response = await WorkerEntrypoint.fetch(request, env, ctx);
+    expect(response.status).toBe(201);
+    const payload = await response.json();
+    expect(payload.post.images).toEqual(['hero']);
   });
-  const ctx = {
-    waitUntil: (_: Promise<unknown>) => {}
-  } as ExecutionContext;
-  const response = await WorkerEntrypoint.fetch(request, env, ctx);
-  expect(response.status).toBe(201);
-  const payload = await response.json();
-  expect(payload.post.images).toEqual(['hero']);
-});
 
 });

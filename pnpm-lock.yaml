@@ -95,6 +95,10 @@ importers:
         version: 2.1.9(@types/node@20.19.23)(lightningcss@1.30.2)
 
   packages/shared:
+    dependencies:
+      zod:
+        specifier: ^4.1.12
+        version: 4.1.12
     devDependencies:
       '@types/node':
         specifier: ^20
@@ -111,6 +115,12 @@ importers:
       '@board-app/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      hono:
+        specifier: ^4.10.6
+        version: 4.10.6
+      zod:
+        specifier: ^4.1.12
+        version: 4.1.12
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20241112.0
@@ -2099,6 +2109,10 @@ packages:
     resolution: {integrity: sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==}
     engines: {node: '>= 0.4'}
 
+  hono@4.10.6:
+    resolution: {integrity: sha512-BIdolzGpDO9MQ4nu3AUuDwHZZ+KViNm+EZ75Ae55eMXMqLVhDFqEMXxtUe9Qh8hjL+pIna/frs2j6Y2yD5Ua/g==}
+    engines: {node: '>=16.9.0'}
+
   ignore@5.3.2:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
     engines: {node: '>= 4'}
@@ -3081,6 +3095,9 @@ packages:
 
   zod@3.22.3:
     resolution: {integrity: sha512-EjIevzuJRiRPbVH4mGc8nApb/lVLKVpmUhAaR5R5doKGfAnGJ6Gr3CViAVjP+4FWSxCsybeWQdcgCtbX+7oZug==}
+
+  zod@4.1.12:
+    resolution: {integrity: sha512-JInaHOamG8pt5+Ey8kGmdcAcg3OL9reK8ltczgHTAwNhMys/6ThXHityHxVV2p3fkw/c+MAvBHFVYHFZDmjMCQ==}
 
 snapshots:
 
@@ -4908,6 +4925,8 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
+  hono@4.10.6: {}
+
   ignore@5.3.2: {}
 
   ignore@7.0.5: {}
@@ -6049,3 +6068,5 @@ snapshots:
       youch-core: 0.3.3
 
   zod@3.22.3: {}
+
+  zod@4.1.12: {}
