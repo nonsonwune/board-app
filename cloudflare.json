@@ -1,0 +1,10 @@
+{
+    "build": {
+        "command": "cd workers && pnpm install && pnpm build",
+        "cwd": "workers"
+    },
+    "deploy": {
+        "command": "npx wrangler deploy",
+        "cwd": "workers"
+    }
+}
