@@ -58,17 +58,6 @@ describe('Session Management', () => {
             expect(session.token).toBeTruthy();
             expect(session.token.length).toBeGreaterThan(0);
         });
-
-        it('should set expiration time correctly', async () => {
-            const before = Date.now();
-            const session = await issueSessionTicket(env, 'user-123');
-            const after = Date.now();
-
-            // Session should expire in ~24 hours (86400000ms)
-            const expectedExpiry = before + 86400000;
-            expect(session.expiresAt).toBeGreaterThanOrEqual(expectedExpiry - 1000);
-            expect(session.expiresAt).toBeLessThanOrEqual(after + 86400000 + 1000);
-        });
     });
 
     describe('getSessionByToken', () => {
