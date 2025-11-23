@@ -23,7 +23,7 @@ bindings = [
 
 [[migrations]]
 tag = "v0"
-new_classes = ["BoardRoomDO"]
+new_sqlite_classes = ["BoardRoomDO"]
 
 [[d1_databases]]
 binding = "BOARD_DB"
