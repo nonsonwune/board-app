@@ -129,7 +129,7 @@ export default function PostDetail({
             <button
               type="submit"
               disabled={isSubmitting || !draft.trim()}
-              className="rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border"
+              className="rounded-full bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border"
             >
               {isSubmitting ? 'Sending…' : 'Reply'}
             </button>

@@ -44,18 +44,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map(toast => (
           <div
             key={toast.id}
-            className="pointer-events-auto rounded-lg border border-slate-700 bg-slate-900/90 px-4 py-3 text-sm text-slate-100 shadow-lg shadow-slate-950/50"
+            className="pointer-events-auto rounded-lg border border-border bg-background px-4 py-3 text-sm text-text-primary shadow-lg"
           >
             <div className="flex items-start gap-3">
               <div className="flex-1">
-                <p className="font-semibold text-slate-100">{toast.title}</p>
-                {toast.description && <p className="mt-1 text-xs text-slate-400">{toast.description}</p>}
+                <p className="font-semibold text-text-primary">{toast.title}</p>
+                {toast.description && <p className="mt-1 text-xs text-text-secondary">{toast.description}</p>}
               </div>
               <button
                 type="button"
                 aria-label="Dismiss"
                 onClick={() => removeToast(toast.id)}
-                className="rounded border border-slate-700 px-2 py-1 text-[10px] uppercase tracking-[2px] text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+                className="rounded border border-border px-2 py-1 text-[10px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
               >
                 Close
               </button>

@@ -2657,13 +2657,11 @@ async function handleLinkIdentity(request: Request, env: Env): Promise<Response>
     });
   }
 
-  const principal = await verifyAccessJwt(request, env);
-  if (!principal?.subject) {
-    throw new ApiError(401, { error: 'access token required' });
-  }
-
   const session = await getSessionFromRequest(request, env);
-  await ensureAccessPrincipalForUser(env, principal, session.user_id, { allowReassign: true });
+  const principal = await verifyAccessJwt(request, env);
+  if (principal?.subject) {
+    await ensureAccessPrincipalForUser(env, principal, session.user_id, { allowReassign: true });
+  }
   const user = await getUserById(env, session.user_id);
   const responseBody = {
     ok: true,

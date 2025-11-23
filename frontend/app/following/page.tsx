@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BoardPost, FollowingFeedResponse } from '@board-app/shared';
+import { statusMessages } from '@board-app/shared';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Loader2, RefreshCcw } from 'lucide-react';
@@ -24,6 +25,7 @@ export default function FollowingPage() {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
   const { identity, session, refreshSession, setSession } = useIdentityContext();
   const router = useRouter();
+  const sessionCopy = statusMessages.session;
 
   const [posts, setPosts] = useState<BoardPost[]>([]);
   const [loading, setLoading] = useState(false);
@@ -69,7 +71,7 @@ export default function FollowingPage() {
             return loadFeed({ reset, cursorOverride: cursorToUse, retryCount: retryCount + 1 });
           }
           setSession(null);
-          throw createHttpError('Session expired. Re-register your identity to continue.', 401);
+          throw createHttpError(sessionCopy.expired, 401);
         }
 
         const payload = (await res.json().catch(() => ({}))) as FollowingFeedResponse & { error?: string };
@@ -99,7 +101,7 @@ export default function FollowingPage() {
         setInitialized(true);
       }
     },
-    [buildHeaders, refreshSession, session?.token, setSession, workerBaseUrl]
+    [buildHeaders, refreshSession, session?.token, setSession, workerBaseUrl, sessionCopy]
   );
 
   useEffect(() => {
@@ -163,12 +165,12 @@ export default function FollowingPage() {
         ) : (
           <section className="space-y-6">
             {error && (
-              <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200">
+              <div className="rounded-2xl border border-primary/40 bg-primary/10 p-4 text-sm text-primary">
                 <p>{error}</p>
                 <button
                   type="button"
                   onClick={() => loadFeed({ reset: posts.length === 0, cursorOverride: posts.length === 0 ? null : cursorRef.current })}
-                  className="mt-3 inline-flex items-center gap-1 rounded-full border border-rose-400/40 px-3 py-1 text-xs uppercase tracking-[2px] text-rose-100 transition hover:border-rose-300 hover:text-rose-50"
+                  className="mt-3 inline-flex items-center gap-1 rounded-full border border-primary/40 px-3 py-1 text-xs uppercase tracking-[2px] text-primary transition hover:border-primary hover:text-primary"
                 >
                   Try again
                 </button>
@@ -207,7 +209,7 @@ export default function FollowingPage() {
                 <button
                   type="button"
                   onClick={() => router.push('/')}
-                  className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-white transition hover:bg-primary-light"
+                  className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-light"
                 >
                   Discover boards
                 </button>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ProfileSummary } from '@board-app/shared';
+import { statusMessages } from '@board-app/shared';
 import { Loader2 } from 'lucide-react';
 import IdentityPanel from '../../components/identity-panel';
 import PostCard from '../../components/feed/post-card';
@@ -50,6 +51,7 @@ export default function ProfilePage() {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
   const { identity, session, refreshSession, setSession } = useIdentityContext();
   const router = useRouter();
+  const sessionCopy = statusMessages.session;
 
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -82,7 +84,7 @@ export default function ProfilePage() {
             return fetchProfile(retryCount + 1);
           }
           setSession(null);
-          throw createHttpError('Session expired. Re-register to continue.', 401);
+          throw createHttpError(sessionCopy.expired, 401);
         }
 
         const payload = (await res.json().catch(() => ({}))) as ProfileSummary & { error?: string };
@@ -99,7 +101,7 @@ export default function ProfilePage() {
         setLoading(false);
       }
     },
-    [buildHeaders, identity?.id, refreshSession, session?.token, setSession, workerBaseUrl]
+    [buildHeaders, identity?.id, refreshSession, session?.token, setSession, workerBaseUrl, sessionCopy]
   );
 
   useEffect(() => {
@@ -148,7 +150,7 @@ export default function ProfilePage() {
             <button
               type="button"
               onClick={() => router.push('/')}
-              className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-white transition hover:bg-primary-light"
+              className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-light"
             >
               Explore boards
             </button>
@@ -156,7 +158,7 @@ export default function ProfilePage() {
         ) : (
           <div className="space-y-8">
             {error && (
-              <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200">
+              <div className="rounded-2xl border border-primary/40 bg-primary/10 p-4 text-sm text-primary">
                 {error}
               </div>
             )}
@@ -213,16 +215,6 @@ export default function ProfilePage() {
               </div>
             </section>
 
-            <section className="rounded-2xl border border-border/70 bg-surface-raised/70 p-6 shadow-sm">
-              <h3 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Identity & aliases</h3>
-              <p className="mt-1 text-xs text-text-secondary">
-                Update your global pseudonym, link to Access, or manage per-board aliases.
-              </p>
-              <div className="mt-4">
-                <IdentityPanel />
-              </div>
-            </section>
-
             <section id="notifications" className="rounded-2xl border border-border/70 bg-surface p-6 shadow-sm">
               <h3 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Notifications</h3>
               <p className="mt-1 text-xs text-text-secondary">
@@ -272,6 +264,16 @@ export default function ProfilePage() {
             </section>
           </div>
         )}
+
+        <section className="rounded-2xl border border-border/70 bg-surface p-6 shadow-sm">
+          <h3 className="text-sm font-semibold uppercase tracking-[2px] text-text-tertiary">Identity & aliases</h3>
+          <p className="mt-1 text-xs text-text-secondary">
+            Register or refresh your campus identity, manage per-board aliases, and link Access.
+          </p>
+          <div className="mt-4">
+            <IdentityPanel />
+          </div>
+        </section>
       </div>
     </PageShell>
   );

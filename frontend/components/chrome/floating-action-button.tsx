@@ -25,7 +25,7 @@ export default function FloatingActionButton({ state }: FloatingActionButtonProp
         onClick={state?.onPress}
         disabled={state?.disabled}
         title={state?.tooltip ?? state?.label}
-        className={`pointer-events-auto inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-semibold text-white shadow-xl shadow-primary/40 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
+        className={`pointer-events-auto inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-semibold text-text-inverse shadow-xl shadow-primary/40 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
           isLive
             ? "bg-danger hover:bg-danger/90"
             : "bg-primary hover:bg-primary-dark disabled:bg-text-tertiary/40"

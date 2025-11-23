@@ -6,6 +6,7 @@ import TopBar from "./top-bar";
 import BottomNav from "./bottom-nav";
 import FloatingActionButton from "./floating-action-button";
 import AppHeader from "../app-header";
+import OnboardingChecklist from "../onboarding-checklist";
 
 interface AppShellProps {
   children: ReactNode;
@@ -23,6 +24,7 @@ export default function AppShell({ children }: AppShellProps) {
       </div>
       <BottomNav />
       <FloatingActionButton state={fab} />
+      <OnboardingChecklist />
     </div>
   );
 }

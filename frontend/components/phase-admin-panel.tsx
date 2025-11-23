@@ -2,10 +2,11 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useToast } from './toast-provider';
 import type { BoardSummary } from '@board-app/shared';
-import BoardMap from './board-map';
-import BoardLocationPicker from './board-location-picker';
+import type { BoardMapProps } from './board-map';
+import type { BoardLocationPickerProps } from './board-location-picker';
 import { formatRelativeTime } from '../lib/date';
 
 interface PhaseSettings {
@@ -18,6 +19,28 @@ interface PhaseSettings {
 }
 
 const DEFAULT_BASE_URL = process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788';
+
+const BoardMap = dynamic<BoardMapProps>(() => import('./board-map'), {
+  ssr: false,
+  loading: () => (
+    <div className="overflow-hidden rounded-2xl border border-border/60">
+      <div className="flex h-[260px] w-full items-center justify-center bg-surface text-sm text-text-secondary">
+        Loading map…
+      </div>
+    </div>
+  )
+});
+
+const BoardLocationPicker = dynamic<BoardLocationPickerProps>(() => import('./board-location-picker'), {
+  ssr: false,
+  loading: () => (
+    <div className="overflow-hidden rounded-2xl border border-border/60">
+      <div className="flex h-[260px] w-full items-center justify-center bg-surface text-sm text-text-secondary">
+        Loading map tools…
+      </div>
+    </div>
+  )
+});
 
 export default function PhaseAdminPanel() {
   const { addToast } = useToast();
@@ -223,7 +246,7 @@ export default function PhaseAdminPanel() {
           </div>
         </div>
         {boardsError && (
-          <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
+          <div className="rounded-lg border border-primary/40 bg-primary/10 p-3 text-sm text-primary">
             {boardsError}
           </div>
         )}
@@ -271,39 +294,39 @@ export default function PhaseAdminPanel() {
         </div>
       </aside>
 
-      <div className="space-y-8 rounded-xl border border-slate-800 bg-slate-950/50 p-6 text-slate-100">
+      <div className="space-y-8 rounded-xl border border-border bg-background p-6 text-text-primary">
         <header className="space-y-2">
-          <h1 className="text-2xl font-semibold text-white">Phase 1 Controls</h1>
-          <p className="text-sm text-slate-400">Manage radius, text-only mode, and location for individual boards.</p>
+          <h1 className="text-2xl font-semibold text-text-primary">Phase 1 Controls</h1>
+          <p className="text-sm text-text-secondary">Manage radius, text-only mode, and location for individual boards.</p>
         </header>
 
         {selectedBoard && (
           <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Live viewers</p>
-              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.activeConnections ?? 0}</p>
+            <div className="rounded-lg border border-border bg-surface p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-text-tertiary">Live viewers</p>
+              <p className="mt-1 text-lg font-semibold text-text-primary">{selectedBoard.activeConnections ?? 0}</p>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Posts (1h)</p>
-              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.postsLastHour ?? 0}</p>
+            <div className="rounded-lg border border-border bg-surface p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-text-tertiary">Posts (1h)</p>
+              <p className="mt-1 text-lg font-semibold text-text-primary">{selectedBoard.postsLastHour ?? 0}</p>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Posts (24h)</p>
-              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.postsLastDay ?? 0}</p>
+            <div className="rounded-lg border border-border bg-surface p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-text-tertiary">Posts (24h)</p>
+              <p className="mt-1 text-lg font-semibold text-text-primary">{selectedBoard.postsLastDay ?? 0}</p>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Trend 24h</p>
-              <p className={`mt-1 text-lg font-semibold ${selectedBoard.postsTrend24Hr ? (selectedBoard.postsTrend24Hr > 0 ? 'text-success' : 'text-danger') : 'text-slate-100'}`}>
+            <div className="rounded-lg border border-border bg-surface p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-text-tertiary">Trend 24h</p>
+              <p className={`mt-1 text-lg font-semibold ${selectedBoard.postsTrend24Hr ? (selectedBoard.postsTrend24Hr > 0 ? 'text-success' : 'text-danger') : 'text-text-primary'}`}>
                 {selectedBoard.postsTrend24Hr ? `${selectedBoard.postsTrend24Hr > 0 ? '+' : ''}${Math.round(selectedBoard.postsTrend24Hr)}%` : 'n/a'}
               </p>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Radius</p>
-              <p className="mt-1 text-lg font-semibold text-slate-100">{selectedBoard.radiusLabel ?? `${Math.round(selectedBoard.radiusMeters ?? 1500)} m`}</p>
+            <div className="rounded-lg border border-border bg-surface p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-text-tertiary">Radius</p>
+              <p className="mt-1 text-lg font-semibold text-text-primary">{selectedBoard.radiusLabel ?? `${Math.round(selectedBoard.radiusMeters ?? 1500)} m`}</p>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-              <p className="text-[11px] uppercase tracking-[2px] text-slate-500">Last post</p>
-              <p className="mt-1 text-lg font-semibold text-slate-100">
+            <div className="rounded-lg border border-border bg-surface p-3">
+              <p className="text-[11px] uppercase tracking-[2px] text-text-tertiary">Last post</p>
+              <p className="mt-1 text-lg font-semibold text-text-primary">
                 {selectedBoard.lastPostAt ? formatRelativeTime(selectedBoard.lastPostAt) : 'No activity'}
               </p>
             </div>
@@ -312,61 +335,61 @@ export default function PhaseAdminPanel() {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
               Worker URL
               <input
                 value={workerUrl}
                 onChange={event => setWorkerUrl(event.target.value)}
-                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
               />
             </label>
-            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
               Admin Token
               <input
                 value={token}
                 onChange={event => setToken(event.target.value)}
                 placeholder="Bearer token"
-                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-rose-500 focus:outline-none"
+                className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
               />
             </label>
           </div>
           <div className="grid gap-4 sm:grid-cols-3">
-            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+            <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
               Board ID
               <input
                 value={boardId}
                 onChange={event => setBoardId(event.target.value)}
                 placeholder="campus-north"
-                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
               />
             </label>
             <button
               type="button"
               onClick={() => fetchSettings()}
               disabled={loading}
-              className="self-end rounded-md border border-sky-500/40 px-3 py-2 text-sm font-semibold text-sky-200 transition hover:border-sky-400 hover:text-sky-100 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
+              className="self-end rounded-md border border-primary/40 px-3 py-2 text-sm font-semibold text-primary transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:border-border disabled:text-text-tertiary"
             >
               {loading ? 'Loading…' : 'Fetch Settings'}
             </button>
           </div>
 
           {settings && (
-            <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-              <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
-                <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-3 py-1 text-sky-200">
+            <div className="space-y-4 rounded-lg border border-border bg-surface p-4">
+              <div className="flex flex-wrap items-center gap-3 text-sm text-text-secondary">
+                <span className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-primary">
                   Mode: {settings.phaseMode === 'phase1' ? 'Phase 1 (fixed radius)' : 'Default'}
                 </span>
                 {settings.textOnly && (
-                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-amber-200">
+                  <span className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-primary">
                     Text-only enabled
                   </span>
                 )}
-                <span className="rounded-full border border-slate-700 px-3 py-1 text-xs uppercase tracking-[2px] text-slate-400">
+                <span className="rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[2px] text-text-secondary">
                   Board: {settings.boardId}
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-4">
-                <label className="flex items-center gap-2 text-sm text-slate-200">
+                <label className="flex items-center gap-2 text-sm text-text-primary">
                   <input
                     type="radio"
                     name="phaseMode"
@@ -376,7 +399,7 @@ export default function PhaseAdminPanel() {
                   />
                   Default Mode
                 </label>
-                <label className="flex items-center gap-2 text-sm text-slate-200">
+                <label className="flex items-center gap-2 text-sm text-text-primary">
                   <input
                     type="radio"
                     name="phaseMode"
@@ -387,7 +410,7 @@ export default function PhaseAdminPanel() {
                   Phase 1 (Fixed Radius)
                 </label>
               </div>
-              <label className="flex items-center gap-2 text-sm text-slate-200">
+              <label className="flex items-center gap-2 text-sm text-text-primary">
                 <input
                   type="checkbox"
                   checked={settings.textOnly}
@@ -397,7 +420,7 @@ export default function PhaseAdminPanel() {
                 />
                 Text-only posts
               </label>
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Fixed Radius (meters)
                 <input
                   type="number"
@@ -410,14 +433,14 @@ export default function PhaseAdminPanel() {
                     )
                   }
                   disabled={settings.phaseMode !== 'phase1'}
-                  className="w-40 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-500"
+                  className="w-40 rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none disabled:cursor-not-allowed disabled:border-border disabled:text-text-tertiary"
                 />
                 {settings.phaseMode !== 'phase1' && (
-                  <span className="text-[11px] text-slate-500">Radius adjustments only apply in Phase 1 mode.</span>
+                  <span className="text-[11px] text-text-tertiary">Radius adjustments only apply in Phase 1 mode.</span>
                 )}
               </label>
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Latitude
                 <input
                   type="number"
@@ -433,11 +456,11 @@ export default function PhaseAdminPanel() {
                           : prev
                       )
                     }
-                    className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                    className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                     placeholder="e.g. 6.5244"
                   />
                 </label>
-                <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                   Longitude
                   <input
                     type="number"
@@ -453,7 +476,7 @@ export default function PhaseAdminPanel() {
                           : prev
                       )
                     }
-                    className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                    className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   placeholder="e.g. 3.3792"
                 />
               </label>
@@ -473,12 +496,12 @@ export default function PhaseAdminPanel() {
             <button
               type="submit"
               disabled={loading || !settings}
-              className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
+              className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-tertiary"
             >
               {loading ? 'Saving…' : 'Save Phase Settings'}
             </button>
             {settings && (
-              <span className="text-xs text-slate-500">Last radius: {Math.round(settings.radiusMeters)} m</span>
+              <span className="text-xs text-text-tertiary">Last radius: {Math.round(settings.radiusMeters)} m</span>
             )}
           </div>
         </form>

@@ -8,6 +8,7 @@ import type {
   SessionTicket,
   UpsertAliasResponse
 } from '@board-app/shared';
+import { statusMessages } from '@board-app/shared';
 type HttpError = Error & { status?: number; payload?: unknown };
 import { useToast } from './toast-provider';
 import { useIdentityContext } from '../context/identity-context';
@@ -28,7 +29,8 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
     setSession,
     refreshSession,
     linkAccessIdentity,
-    hydrated
+    hydrated,
+    logout
   } = useIdentityContext();
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [registerLoading, setRegisterLoading] = useState(false);
@@ -68,7 +70,13 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   const displayIdentity = hydrated ? identity : null;
   const displaySession = hydrated ? session : null;
   const registerLabel = displayIdentity ? 'Re-register' : 'Register';
+  const hasActiveIdentity = Boolean(displayIdentity?.id && displaySession?.token);
+  const allowRegister = !hasActiveIdentity;
   const { addToast } = useToast();
+  const copy = statusMessages;
+  const aliasCopy = copy.alias;
+  const sessionCopy = copy.session;
+  const accessCopy = copy.access;
 
   const raiseForStatus = (res: Response, payload: unknown, fallback: string) => {
     if (res.ok) return;
@@ -92,14 +100,15 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
       if (refreshed) {
         return 'refreshed';
       }
-      const message =
+      const payloadMessage =
         typeof httpError.payload === 'object' && httpError.payload !== null && 'error' in httpError.payload
-          ? String((httpError.payload as { error?: unknown }).error ?? 'Session expired. Re-register identity.')
-          : 'Session expired. Re-register identity.';
-      setter(message);
+          ? String((httpError.payload as { error?: unknown }).error ?? '')
+          : '';
+      setter(payloadMessage || sessionCopy.expired);
       setSession(null);
       return 'expired';
     }
+    setter(sessionCopy.error);
     return 'noop';
   };
 
@@ -116,6 +125,10 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
 
   async function handleRegister(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!allowRegister) {
+      setRegisterError('You are already signed in. Sign out before registering a new identity.');
+      return;
+    }
     const form = event.currentTarget;
     const formData = new FormData(form);
     const pseudonym = (formData.get('pseudonym') as string)?.trim();
@@ -131,7 +144,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pseudonym })
     }).catch(error => {
-      setRegisterError('Network error registering identity');
+      setRegisterError('Unable to reach the identity service. Make sure the worker is running on http://localhost:8788.');
       throw error;
     });
     if (!res) {
@@ -157,21 +170,22 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
 
   async function handleRefreshSession() {
     if (!identity || !session?.token) {
-      setRegisterError('Register identity before refreshing session.');
+      setRegisterError(aliasCopy.requireIdentity);
       return;
     }
-    setSessionStatus(null);
+    setSessionStatus(sessionCopy.refreshing);
     setRefreshingSession(true);
     try {
       const ticket = await refreshSession(workerBaseUrl);
       if (!ticket) {
-        setRegisterError('Session expired. Re-register identity.');
-        setSessionStatus('Session refresh failed.');
-        addToast({ title: 'Session refresh failed', description: 'Please re-register identity.' });
+        setRegisterError(sessionCopy.expired);
+        setSessionStatus(sessionCopy.error);
+        addToast({ title: 'Session refresh failed', description: sessionCopy.error });
       } else {
         setRegisterError(null);
-        setSessionStatus(`Session refreshed • expires ${new Date(ticket.expiresAt).toLocaleString()}`);
-        addToast({ title: 'Session refreshed', description: 'Identity session extended.' });
+        const restoredMessage = sessionCopy.restored({ expiresAt: new Date(ticket.expiresAt) });
+        setSessionStatus(restoredMessage);
+        addToast({ title: 'Session refreshed', description: restoredMessage });
       }
     } finally {
       setRefreshingSession(false);
@@ -179,19 +193,27 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   }
 
   async function handleLinkAccess() {
-    setLinkStatus(null);
+    setLinkStatus(accessCopy.linking);
     setLinkingAccess(true);
     try {
       const user = await linkAccessIdentity(workerBaseUrl);
       if (user) {
-        setLinkStatus(`Linked Access identity to ${user.pseudonym}.`);
-        addToast({ title: 'Access linked', description: `Running as ${user.pseudonym}.` });
+        const linkedMessage = accessCopy.linked({ pseudonym: user.pseudonym });
+        setLinkStatus(linkedMessage);
+        addToast({ title: 'Access linked', description: linkedMessage });
       } else {
-        setLinkStatus('No Access identity detected or already linked.');
-        addToast({ title: 'Access link unavailable', description: 'No active Access token found.' });
+        setLinkStatus(accessCopy.unavailable);
+        addToast({ title: 'Access link unavailable', description: accessCopy.unavailable });
       }
     } catch (error) {
-      setLinkStatus((error as Error).message ?? 'Failed to link Access identity');
+      const httpError = error as HttpError;
+      if (httpError?.status === 403 || httpError?.status === 401) {
+        setLinkStatus(accessCopy.forbidden);
+        addToast({ title: 'Access link failed', description: accessCopy.forbidden });
+      } else {
+        setLinkStatus(httpError?.message ?? accessCopy.error);
+        addToast({ title: 'Access link failed', description: httpError?.message ?? accessCopy.error });
+      }
     } finally {
       setLinkingAccess(false);
     }
@@ -200,25 +222,25 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   async function handleAliasSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!identity) {
-      setAliasStatus('Register an identity first.');
+      setAliasStatus(aliasCopy.requireIdentity);
       return;
     }
     if (!session?.token) {
-      setAliasStatus('Session expired. Re-register identity.');
+      setAliasStatus(aliasCopy.requireSession);
       return;
     }
     if (!aliasBoardId.trim()) {
-      setAliasStatus('Board ID is required.');
+      setAliasStatus(aliasCopy.boardRequired);
       return;
     }
     const alias = aliasValue.trim();
     if (!alias) {
-      setAliasStatus('Alias is required.');
+      setAliasStatus(aliasCopy.aliasRequired);
       return;
     }
 
     setAliasLoading(true);
-    setAliasStatus(null);
+    setAliasStatus(aliasCopy.saving);
 
     const attempt = async () => {
       const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(aliasBoardId)}/aliases`, {
@@ -233,8 +255,9 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
       raiseForStatus(res, payload, `Failed to update alias (${res.status})`);
       const body = payload as UpsertAliasResponse;
       setAlias(aliasBoardId, body.alias);
-      setAliasStatus(`Alias for ${aliasBoardId} set to “${body.alias.alias}”.`);
-      addToast({ title: 'Alias saved', description: `Board ${aliasBoardId} now knows you as ${body.alias.alias}.` });
+      const savedMessage = aliasCopy.saved({ boardId: aliasBoardId, alias: body.alias.alias });
+      setAliasStatus(savedMessage);
+      addToast({ title: 'Alias saved', description: savedMessage });
     };
 
     try {
@@ -246,11 +269,21 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
           await attempt();
           return;
         } catch (retryError) {
-          setAliasStatus((retryError as Error).message ?? 'Failed to update alias');
+          const httpError = retryError as HttpError;
+          if (httpError?.status === 409) {
+            setAliasStatus(aliasCopy.conflict);
+          } else {
+            setAliasStatus(httpError?.message || aliasCopy.error);
+          }
         }
       }
       if (outcome !== 'expired') {
-        setAliasStatus((error as Error).message ?? 'Failed to update alias');
+        const httpError = error as HttpError;
+        if (httpError?.status === 409) {
+          setAliasStatus(aliasCopy.conflict);
+        } else {
+          setAliasStatus(httpError?.message || aliasCopy.error);
+        }
       }
     } finally {
       setAliasLoading(false);
@@ -260,10 +293,11 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   async function handleHydrateAlias(boardId: string) {
     if (!identity) return;
     if (!session?.token) {
-      setAliasStatus('Session expired. Re-register identity.');
+      setAliasStatus(aliasCopy.requireSession);
       return;
     }
     setFetchingAlias(true);
+    setAliasStatus(aliasCopy.fetching);
     const attempt = async () => {
       const res = await fetch(
         `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases?userId=${encodeURIComponent(identity.id)}`,
@@ -280,10 +314,12 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
         setAlias(boardId, body.alias);
         setHydratedAlias(body.alias);
         setAliasValue(body.alias.alias);
+        setAliasStatus(aliasCopy.fetched({ boardId, alias: body.alias.alias }));
       } else {
         setAlias(boardId, null);
         setHydratedAlias(null);
         setAliasValue('');
+        setAliasStatus(aliasCopy.fetched({ boardId, alias: null }));
       }
     };
 
@@ -296,11 +332,11 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
           await attempt();
           return;
         } catch (retryError) {
-          setAliasStatus((retryError as Error).message ?? 'Failed to fetch alias');
+          setAliasStatus((retryError as Error).message ?? aliasCopy.error);
         }
       }
       if (outcome !== 'expired') {
-        setAliasStatus((error as Error).message ?? 'Failed to fetch alias');
+        setAliasStatus((error as Error).message ?? aliasCopy.error);
       }
     } finally {
       setFetchingAlias(false);
@@ -309,82 +345,92 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
 
   return (
     <div className="space-y-10">
-      <section id="identity" className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
-        <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Identity</h2>
-        <form onSubmit={handleRegister} className="mt-4 flex flex-wrap items-end gap-4">
-          <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
-            Pseudonym
-            <input
-              name="pseudonym"
-              placeholder="e.g. StudioScout"
-              defaultValue=""
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
-            />
-          </label>
-          <button
-            type="submit"
-            disabled={registerLoading}
-            className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-          >
-            {registerLoading ? 'Registering…' : registerLabel}
-          </button>
-        </form>
-        {displayIdentity && (
-          <div className="mt-3 space-y-2 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
-            <p>
-              Current identity: <span className="font-semibold text-slate-200">{displayIdentity.pseudonym}</span>{' '}
-              <code className="ml-1 rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-300">{displayIdentity.id}</code>
-            </p>
-            {displaySession && (
-              <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
-                <span>Session expires {new Date(displaySession.expiresAt).toLocaleString()}</span>
-                <button
-                  type="button"
-                  onClick={handleRefreshSession}
-                  disabled={refreshingSession}
-                  className="rounded-md border border-sky-500/40 px-2 py-1 uppercase tracking-[2px] text-sky-300 transition hover:border-sky-400 hover:text-sky-200 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
-                >
-                  {refreshingSession ? 'Refreshing…' : 'Refresh Session'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleLinkAccess}
-                  disabled={linkingAccess}
-                  className="rounded-md border border-emerald-500/40 px-2 py-1 uppercase tracking-[2px] text-emerald-300 transition hover:border-emerald-400 hover:text-emerald-200 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
-                >
-                  {linkingAccess ? 'Linking…' : 'Link Access Identity'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSession(null)}
-                  className="rounded-md border border-rose-500/40 px-2 py-1 uppercase tracking-[2px] text-rose-300 transition hover:border-rose-400 hover:text-rose-200"
-                >
-                  Clear Session
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        {session && (
-          <p className="mt-2 text-[11px] text-slate-500">
-            Session expires {new Date(session.expiresAt).toLocaleString()}
+      <section id="identity" className="rounded-xl border border-border bg-surface p-6">
+        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Identity</h2>
+        {allowRegister ? (
+          <form onSubmit={handleRegister} className="mt-4 flex flex-wrap items-end gap-4">
+            <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+              Pseudonym
+              <input
+                name="pseudonym"
+                placeholder="e.g. StudioScout"
+                defaultValue={identity?.pseudonym ?? ''}
+                className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={registerLoading}
+              className="rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
+            >
+              {registerLoading ? 'Registering…' : registerLabel}
+            </button>
+          </form>
+        ) : (
+          <p className="mt-4 text-sm text-text-secondary">
+            You are already signed in. Use the controls below to manage your session or sign out before registering a new identity.
           </p>
         )}
         {registerError && (
-          <p className="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{registerError}</p>
+          <p className="mt-3 rounded-lg border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{registerError}</p>
+        )}
+        {displayIdentity && (
+          <div className="mt-4 space-y-3 rounded-lg border border-border bg-background p-4 text-sm text-text-secondary">
+            <p>
+              Current identity: <span className="font-semibold text-text-primary">{displayIdentity.pseudonym}</span>{' '}
+              <code className="ml-2 rounded bg-surface px-2 py-1 text-[11px] text-text-tertiary">{displayIdentity.id}</code>
+            </p>
+            <div className="flex flex-wrap items-center gap-3 text-[11px] uppercase tracking-[2px] text-text-secondary">
+              {displaySession ? (
+                <span>Session expires {new Date(displaySession.expiresAt).toLocaleString()}</span>
+              ) : (
+                <span>No active session detected</span>
+              )}
+              <button
+                type="button"
+                onClick={handleRefreshSession}
+                disabled={refreshingSession || !session?.token}
+                className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {refreshingSession ? 'Refreshing…' : 'Refresh Session'}
+              </button>
+              <button
+                type="button"
+                onClick={handleLinkAccess}
+                disabled={linkingAccess}
+                className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {linkingAccess ? 'Linking…' : 'Link Access Identity'}
+              </button>
+              <button
+                type="button"
+                onClick={() => logout(workerBaseUrl)}
+                className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary"
+              >
+                Sign Out
+              </button>
+              <button
+                type="button"
+                onClick={() => setSession(null)}
+                className="rounded-full border border-primary px-3 py-1 text-primary transition hover:bg-primary hover:text-text-inverse"
+              >
+                Clear Session
+              </button>
+            </div>
+          </div>
         )}
         {sessionStatus && (
-          <p className="mt-3 rounded-md border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-200">{sessionStatus}</p>
+          <p className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-text-secondary">{sessionStatus}</p>
         )}
         {linkStatus && (
-          <p className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">{linkStatus}</p>
+          <p className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-text-secondary">{linkStatus}</p>
         )}
       </section>
 
-      <section id="aliases" className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
-        <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Board Alias</h2>
+      <section id="aliases" className="rounded-xl border border-border bg-surface p-6">
+        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Board Alias</h2>
         <form onSubmit={handleAliasSubmit} className="mt-4 grid gap-4 sm:grid-cols-3">
-          <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+          <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
             Board ID
             <input
               value={aliasBoardId}
@@ -395,10 +441,10 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                 setAliasStatus(null);
               }}
               placeholder="demo-board"
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
             />
           </label>
-          <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+          <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
             Alias
             <input
               value={aliasValue}
@@ -407,37 +453,37 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                 setAliasStatus(null);
               }}
               placeholder="e.g. StudioScout"
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+              className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
               disabled={!identity}
             />
           </label>
           <button
             type="submit"
             disabled={!identity || aliasLoading}
-            className="self-end rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+            className="self-end rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
           >
             {aliasLoading ? 'Saving…' : 'Save Alias'}
           </button>
         </form>
-        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
           <button
             type="button"
             onClick={() => aliasBoardId && handleHydrateAlias(aliasBoardId)}
             disabled={!identity || !aliasBoardId || fetchingAlias}
-            className="rounded-md border border-slate-700 px-3 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
+            className="rounded-full border border-border px-3 py-1 uppercase tracking-[2px] transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
           >
             {fetchingAlias ? 'Fetching…' : 'Refresh Alias'}
           </button>
           {hydratedAlias && (
-            <span className="rounded bg-slate-900 px-2 py-1 font-mono text-[11px] text-slate-300">{hydratedAlias.alias}</span>
+            <span className="rounded bg-background px-2 py-1 font-mono text-[11px] text-text-secondary">{hydratedAlias.alias}</span>
           )}
         </div>
         {aliasStatus && (
-          <p className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-emerald-300/80">{aliasStatus}</p>
+          <p className="mt-3 rounded-lg border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{aliasStatus}</p>
         )}
         {identity && aliasSuggestions.length > 0 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-            <span className="uppercase tracking-[2px] text-slate-500">Try:</span>
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
+            <span className="uppercase tracking-[2px] text-text-tertiary">Try:</span>
             {aliasSuggestions.map(suggestion => (
               <button
                 key={suggestion}
@@ -447,7 +493,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                   setAliasStatus(null);
                   addToast({ title: 'Alias suggestion applied', description: suggestion });
                 }}
-                className="rounded-full border border-slate-700 px-3 py-1 text-slate-300 transition hover:border-sky-500 hover:text-sky-200"
+                className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary"
               >
                 {suggestion}
               </button>
@@ -456,18 +502,18 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
         )}
       </section>
 
-      <section className="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
-        <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Saved Aliases</h2>
+      <section className="rounded-xl border border-border bg-surface p-6">
+        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Saved Aliases</h2>
         {aliasEntries.length === 0 && (
-          <p className="mt-3 text-xs text-slate-500">No aliases cached yet. Register one above to populate this list.</p>
+          <p className="mt-3 text-xs text-text-secondary">No aliases cached yet. Register one above to populate this list.</p>
         )}
         {aliasEntries.length > 0 && (
-          <ul className="mt-3 space-y-2 text-xs text-slate-300">
+          <ul className="mt-3 space-y-2 text-xs text-text-secondary">
             {aliasEntries.map(([boardId, value]) => (
-              <li key={boardId} className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+              <li key={boardId} className="flex items-center justify-between rounded-lg border border-border bg-background p-3">
                 <div>
-                  <p className="font-semibold text-slate-200">{boardId}</p>
-                  <p className="text-[11px] text-slate-500">{value?.alias ?? '—'}</p>
+                  <p className="font-semibold text-text-primary">{boardId}</p>
+                  <p className="text-[11px] text-text-tertiary">{value?.alias ?? '—'}</p>
                 </div>
                 <button
                   type="button"
@@ -476,8 +522,9 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                     if (boardId === aliasBoardId) {
                       setAliasValue('');
                     }
+                    setAliasStatus(aliasCopy.cleared({ boardId }));
                   }}
-                  className="rounded-md border border-rose-500/40 px-3 py-1 text-[11px] uppercase tracking-[2px] text-rose-300 transition hover:border-rose-400 hover:text-rose-200"
+                  className="rounded-full border border-primary px-3 py-1 text-[11px] uppercase tracking-[2px] text-primary transition hover:bg-primary hover:text-text-inverse"
                 >
                   Clear
                 </button>

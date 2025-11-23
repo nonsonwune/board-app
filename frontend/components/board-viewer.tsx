@@ -17,6 +17,7 @@ import type {
   ListRepliesResponse,
   CreateReplyResponse
 } from '@board-app/shared';
+import { statusMessages } from '@board-app/shared';
 import { useBoardEvents } from '../hooks/use-board-events';
 import { useToast } from './toast-provider';
 import { useIdentityContext } from '../context/identity-context';
@@ -29,6 +30,7 @@ import PostDetail from './feed/post-detail';
 import { formatBoardDistance } from '../lib/date';
 import { formatBoardName } from '../lib/board';
 import BoardMap from './board-map';
+import { markBoardJoined } from '../lib/onboarding';
 
 const DEFAULT_SPACE_TABS = ['Home', 'Student Life', 'Events', 'Sports'];
 type ReplyState = BoardReply & { pending?: boolean };
@@ -82,6 +84,10 @@ const SPONSORED_QUIET_CARDS = loadSponsoredQuietCards();
 const SPONSORED_DISMISSED_STORAGE_KEY = 'boardapp:sponsoredQuiet:dismissed';
 const SPONSORED_IMPRESSIONS_STORAGE_KEY = 'boardapp:sponsoredQuiet:impressions';
 const MAX_POST_CHARACTERS = 300;
+const copy = statusMessages;
+const aliasCopy = copy.alias;
+const sessionCopy = copy.session;
+const accessCopy = copy.access;
 
 export default function BoardViewer({ boardId }: BoardViewerProps) {
   const [workerBaseUrl] = useState(() => process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788');
@@ -469,13 +475,13 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const badgeTone = useMemo(() => {
     switch (status) {
       case 'connected':
-        return 'bg-emerald-500/20 text-emerald-300';
+        return 'border border-primary bg-primary/15 text-primary';
       case 'connecting':
-        return 'bg-sky-500/20 text-sky-200';
+        return 'border border-border bg-surface text-text-secondary';
       case 'error':
-        return 'bg-amber-500/20 text-amber-200';
+        return 'border border-primary bg-primary/20 text-primary';
       default:
-        return 'bg-slate-700/40 text-slate-300';
+        return 'border border-border bg-surface text-text-secondary';
     }
   }, [status]);
 
@@ -557,9 +563,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const sponsoredQuietContent = useMemo(() => {
     if (!sponsoredQuietCard) return null;
     return (
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-left">
-        <p className="text-sm font-semibold text-slate-200">{sponsoredQuietCard.title}</p>
-        <p className="mt-2 text-xs text-slate-400">{sponsoredQuietCard.body}</p>
+      <div className="rounded-xl border border-border bg-surface p-4 text-left">
+        <p className="text-sm font-semibold text-text-primary">{sponsoredQuietCard.title}</p>
+        <p className="mt-2 text-xs text-text-secondary">{sponsoredQuietCard.body}</p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <a
             href={sponsoredQuietCard.href}
@@ -569,7 +575,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
               event.stopPropagation();
               handleSponsoredCtaClick(sponsoredQuietCard);
             }}
-            className="inline-flex items-center gap-1 rounded-full bg-sky-500 px-3 py-1 text-xs font-semibold text-slate-950 transition hover:bg-sky-400"
+            className="inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-text-inverse transition hover:bg-primary-dark"
           >
             {sponsoredQuietCard.cta}
           </a>
@@ -579,7 +585,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
               event.stopPropagation();
               handleSponsoredDismiss(sponsoredQuietCard.id, sponsoredQuietCard.title);
             }}
-            className="inline-flex items-center gap-1 rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+            className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs text-text-secondary transition hover:border-primary hover:text-primary"
           >
             Dismiss
           </button>
@@ -597,16 +603,20 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           return 'refreshed';
         }
         setSession(null);
-        const message =
+        const payloadMessage =
           typeof httpError.payload === 'object' && httpError.payload !== null && 'error' in httpError.payload
-            ? String((httpError.payload as { error?: unknown }).error ?? 'Session expired. Re-register identity.')
-            : 'Session expired. Re-register identity.';
+            ? String((httpError.payload as { error?: unknown }).error ?? '')
+            : '';
+        const message = payloadMessage || sessionCopy.expired;
         if (setMessage) {
           setMessage(message);
         } else {
           setIdentityError(message);
         }
         return 'expired';
+      }
+      if (setMessage) {
+        setMessage(sessionCopy.error);
       }
       return 'noop';
     },
@@ -764,14 +774,14 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         return;
       }
       if (!userId) {
-        const message = 'Register an identity to react to posts.';
+        const message = aliasCopy.requireIdentity;
         setReactionStatus(message);
         setIdentityModalMode('register');
         setShowIdentityModal(true);
         return;
       }
       if (!sessionToken) {
-        const message = 'Session expired. Re-register identity.';
+        const message = sessionCopy.expired;
         setReactionStatus(message);
         setIdentityModalMode('session');
         setShowIdentityModal(true);
@@ -995,25 +1005,25 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       const trimmed = value.trim();
 
       if (!identity) {
-        setAliasError('Register an identity first.');
+        setAliasError(aliasCopy.requireIdentity);
         setIdentityModalMode('register');
         setShowIdentityModal(true);
         return false;
       }
       if (!sessionToken) {
-        setAliasError('Session expired. Re-register identity.');
+        setAliasError(aliasCopy.requireSession);
         setIdentityModalMode('session');
         setShowIdentityModal(true);
         return false;
       }
       if (!trimmed) {
-        setAliasError('Alias cannot be empty.');
+        setAliasError(aliasCopy.aliasRequired);
         return false;
       }
 
       setAliasLoading(true);
       setAliasError(null);
-      setAliasStatus(null);
+      setAliasStatus(aliasCopy.saving);
 
       const attempt = async () => {
         const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases`, {
@@ -1028,8 +1038,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         const body = payload as UpsertAliasResponse;
         setAlias(body.alias);
         setAliasInput(body.alias.alias);
-        setAliasStatus(`Alias set to “${body.alias.alias}”.`);
-        addToast({ title: 'Alias saved', description: `Showing as ${body.alias.alias} on this board.` });
+        const savedMessage = aliasCopy.saved({ boardId, alias: body.alias.alias });
+        setAliasStatus(savedMessage);
+        addToast({ title: 'Alias saved', description: savedMessage });
       };
 
       try {
@@ -1042,10 +1053,20 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             await attempt();
             return true;
           } catch (retryError) {
-            setAliasError((retryError as Error).message ?? 'Failed to update alias');
+            const httpError = retryError as HttpError;
+            if (httpError?.status === 409) {
+              setAliasError(aliasCopy.conflict);
+            } else {
+              setAliasError(httpError?.message ?? aliasCopy.error);
+            }
           }
         } else if (outcome !== 'expired') {
-          setAliasError((error as Error).message ?? 'Failed to update alias');
+          const httpError = error as HttpError;
+          if (httpError?.status === 409) {
+            setAliasError(aliasCopy.conflict);
+          } else {
+            setAliasError(httpError?.message ?? aliasCopy.error);
+          }
         }
         return false;
       } finally {
@@ -1085,30 +1106,40 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
 
   const refreshIdentitySession = useCallback(async () => {
     if (!identity || !session?.token) {
-      setSessionMessage('Register identity again to create a new session.');
+      setSessionMessage(aliasCopy.requireIdentity);
       return false;
     }
 
     setSessionRefreshing(true);
-    setSessionMessage(null);
+    setSessionMessage(sessionCopy.refreshing);
 
     try {
       const ticket = await refreshSession(workerBaseUrl);
       if (!ticket) {
-        setSessionMessage('Session expired. Re-register identity.');
+        setSessionMessage(sessionCopy.expired);
         setSession(null);
         return false;
       }
-      setSessionMessage(`Session refreshed • expires ${new Date(ticket.expiresAt).toLocaleString()}`);
-      addToast({ title: 'Session refreshed', description: 'Identity session extended.' });
+      const restoredMessage = sessionCopy.restored({ expiresAt: new Date(ticket.expiresAt) });
+      setSessionMessage(restoredMessage);
+      addToast({ title: 'Session refreshed', description: restoredMessage });
       return true;
     } catch (error) {
-      setSessionMessage((error as Error).message ?? 'Unable to refresh session.');
+      setSessionMessage((error as Error).message ?? sessionCopy.error);
       return false;
     } finally {
       setSessionRefreshing(false);
     }
-  }, [identity, session?.token, refreshSession, workerBaseUrl, setSession, addToast, setSessionMessage, setSessionRefreshing]);
+  }, [
+    identity,
+    session?.token,
+    refreshSession,
+    workerBaseUrl,
+    setSession,
+    addToast,
+    setSessionMessage,
+    setSessionRefreshing
+  ]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1179,6 +1210,13 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       cancelled = true;
     };
   }, [identity, boardId, workerBaseUrl, sharedAlias, sessionToken, buildHeaders, raiseForStatus, handleSessionError]);
+
+  useEffect(() => {
+    if (!identity?.id || !sessionToken) {
+      return;
+    }
+    markBoardJoined();
+  }, [identity?.id, sessionToken, boardId]);
 
   useEffect(() => {
     if (!identityHydrated) return;
@@ -1368,42 +1406,42 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 py-12">
+    <div className="min-h-screen bg-background text-text-primary py-12">
       <div className="mx-auto max-w-4xl px-6">
-        <header className="flex flex-col gap-3 border-b border-slate-800 pb-6">
-          <div className="flex items-center gap-3 text-sm text-slate-400">
+        <header className="flex flex-col gap-3 border-b border-border pb-6">
+          <div className="flex items-center gap-3 text-sm text-text-secondary">
             <span className={`rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${badgeTone}`}>
               {statusLabel}
             </span>
-            <span className="text-xs uppercase tracking-[2px] text-slate-500">Board</span>
+            <span className="text-xs uppercase tracking-[2px] text-text-tertiary">Board</span>
           </div>
-          <h1 className="text-4xl font-semibold text-white">{boardMeta?.displayName ?? boardId}</h1>
-          <p className="text-sm text-slate-400">
-            Connected to <code className="rounded bg-slate-900 px-1">{workerBaseUrl}</code>{' '}
+          <h1 className="text-4xl font-semibold text-text-primary">{boardMeta?.displayName ?? boardId}</h1>
+          <p className="text-sm text-text-secondary">
+            Connected to <code className="rounded bg-surface px-1">{workerBaseUrl}</code>{' '}
             ·{' '}
             {isPhaseOneBoard
               ? `showing posts within a fixed ${radiusMetersDisplay ?? 1500} m radius`
               : `showing posts within ${sharedAlias ? 'your saved radius' : 'an adaptive radius'}`}
           </p>
           {boardMeta?.description ? (
-            <p className="text-sm text-slate-500">{boardMeta.description}</p>
+            <p className="text-sm text-text-tertiary">{boardMeta.description}</p>
           ) : (
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-text-tertiary">
               Stay updated on events and drop-ins happening around this part of campus.
             </p>
           )}
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
             {effectiveIdentity ? (
-              <span className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 font-medium text-slate-200">
+              <span className="flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 font-medium text-text-primary">
                 {effectiveIdentity.pseudonym}
-                <span className="text-[10px] text-slate-500">#{effectiveIdentity.id.slice(0, 6)}</span>
+                <span className="text-[10px] text-text-tertiary">#{effectiveIdentity.id.slice(0, 6)}</span>
               </span>
             ) : (
               <span>Register an identity to post as yourself.</span>
             )}
             {effectiveIdentity && (
-              <span className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-slate-300">
-                Alias: <strong className="text-slate-100">{alias?.alias ?? boardAliasLookup.get(effectiveIdentity.id) ?? '—'}</strong>
+              <span className="flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-text-secondary">
+                Alias: <strong className="text-text-primary">{alias?.alias ?? boardAliasLookup.get(effectiveIdentity.id) ?? '—'}</strong>
               </span>
             )}
             {effectiveIdentity && (
@@ -1413,14 +1451,14 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                   setIdentityModalMode('alias');
                   setShowIdentityModal(true);
                 }}
-                className="rounded-md border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
+                className="rounded-md border border-border px-2 py-1 text-[11px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
               >
                 Edit alias
               </button>
             )}
             <Link
               href="/profile"
-              className="rounded-md border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
+              className="rounded-md border border-border px-2 py-1 text-[11px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
             >
               Manage Identity →
             </Link>
@@ -1428,7 +1466,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         </header>
 
         {(isPhaseOneBoard || isTextOnlyBoard) && (
-          <div className="mt-6 rounded-lg border border-sky-500/40 bg-sky-500/10 p-4 text-sm text-sky-100">
+          <div className="mt-6 rounded-lg border border-primary/40 bg-primary/10 p-4 text-sm text-primary">
             {isPhaseOneBoard && (
               <p>
                 Phase 1 launch mode active. Radius locked to {radiusMetersDisplay ?? 1500} m for consistent dorm coverage.
@@ -1450,7 +1488,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         ) : null}
 
         {error && (
-          <div className="mt-6 rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200">
+          <div className="mt-6 rounded-lg border border-primary/40 bg-primary/10 p-4 text-sm text-primary">
             {error}
           </div>
         )}
@@ -1458,75 +1496,75 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         <section className="mt-10">
           {showDevTools && (
             <>
-          <form onSubmit={handleRegisterIdentity} className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Register Identity</h2>
-            <p className="mt-2 text-xs text-slate-500">
+          <form onSubmit={handleRegisterIdentity} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Register Identity</h2>
+            <p className="mt-2 text-xs text-text-tertiary">
               Identities map to pseudonyms used across boards. Reactions require a user ID.
             </p>
             <div className="mt-4 flex flex-wrap items-end gap-4">
-              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Pseudonym
                 <input
                   name="pseudonym"
                   placeholder="e.g. CampusScout"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   required
                 />
               </label>
               <button
                 type="submit"
                 disabled={identityLoading}
-                className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
               >
                 {identityLoading ? 'Registering…' : registerLabel}
               </button>
             </div>
             {effectiveIdentity && (
-              <div className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
+              <div className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
                 <p>
                   Active identity:{' '}
-                  <span className="font-semibold text-slate-200">{effectiveIdentity.pseudonym}</span>{' '}
-                  <code className="ml-1 rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-300">{effectiveIdentity.id}</code>
+                  <span className="font-semibold text-text-primary">{effectiveIdentity.pseudonym}</span>{' '}
+                  <code className="ml-1 rounded bg-background px-2 py-1 text-[11px] text-text-secondary">{effectiveIdentity.id}</code>
                 </p>
                 {alias && (
-                  <p className="mt-2 text-[11px] text-slate-500">
-                    Board alias: <span className="font-semibold text-slate-200">{alias.alias}</span>
+                  <p className="mt-2 text-[11px] text-text-tertiary">
+                    Board alias: <span className="font-semibold text-text-primary">{alias.alias}</span>
                   </p>
                 )}
                 <Link
                   href="/profile"
-                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-sky-300 transition hover:text-sky-100"
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary transition hover:text-primary"
                 >
                   Manage identity & sessions →
                 </Link>
               </div>
             )}
             {effectiveIdentity && !sessionToken && (
-              <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-                <p>Your session expired. Re-link your Access identity to continue posting.</p>
+              <div className="mt-3 rounded-md border border-primary/30 bg-primary/10 p-3 text-xs text-primary">
+                <p>{accessCopy.forbidden}</p>
                 <Link
                   href="/profile"
-                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-amber-200 underline-offset-4 hover:text-amber-100 hover:underline"
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary underline-offset-4 hover:text-primary hover:underline"
                 >
                   Re-link session →
                 </Link>
               </div>
             )}
             {identityError && (
-              <p className="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{identityError}</p>
+              <p className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{identityError}</p>
             )}
           </form>
 
           <form
             onSubmit={handleUpsertAlias}
-            className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30"
+            className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md"
           >
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Set Board Alias</h2>
-            <p className="mt-2 text-xs text-slate-500">
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Set Board Alias</h2>
+            <p className="mt-2 text-xs text-text-tertiary">
               Aliases display only within this board. They override your global pseudonym.
             </p>
             <div className="mt-4 flex flex-wrap items-end gap-4">
-              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Alias
                 <input
                   name="boardAlias"
@@ -1537,69 +1575,69 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                     setAliasError(null);
                   }}
                   placeholder="e.g. LibraryLookout"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   disabled={!identity}
                 />
               </label>
               <button
                 type="submit"
                 disabled={!identity || aliasLoading}
-                className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
               >
                 {!identity ? 'Register identity first' : aliasLoading ? 'Saving…' : alias ? 'Update Alias' : 'Save Alias'}
               </button>
             </div>
             {alias && (
-              <p className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-400">
-                Current alias: <span className="font-semibold text-slate-200">{alias.alias}</span>
+              <p className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
+                Current alias: <span className="font-semibold text-text-primary">{alias.alias}</span>
                 {alias.aliasNormalized && (
-                  <code className="ml-2 rounded bg-slate-950 px-2 py-1 text-[11px] text-slate-300">{alias.aliasNormalized}</code>
+                  <code className="ml-2 rounded bg-background px-2 py-1 text-[11px] text-text-secondary">{alias.aliasNormalized}</code>
                 )}
               </p>
             )}
             {aliasStatus && (
-              <p className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-xs text-emerald-300/80">{aliasStatus}</p>
+              <p className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-primary/80">{aliasStatus}</p>
             )}
             {aliasError && (
-              <p className="mt-3 rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{aliasError}</p>
+              <p className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{aliasError}</p>
             )}
           </form>
 
-          <form onSubmit={handleCreatePost} className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Create Test Post</h2>
+          <form onSubmit={handleCreatePost} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Create Test Post</h2>
             <div className="mt-4 flex flex-wrap gap-4">
-              <label className="flex min-w-[140px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex min-w-[140px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Author (optional)
                 <input
                   name="postAuthor"
                   placeholder="Anon"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                 />
               </label>
               {sessionToken ? (
                 <>
-                  <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+                  <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                     Message
                     <input
                       name="postBody"
                       placeholder="Share an update"
-                      className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                       required
                     />
                   </label>
                   <button
                     type="submit"
-                    className="self-end rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                    className="self-end rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark"
                   >
                     Post
                   </button>
                 </>
               ) : (
-                <div className="flex flex-1 items-center justify-between rounded-md border border-dashed border-slate-800 bg-slate-900/40 px-4 py-3 text-xs text-slate-400">
+                <div className="flex flex-1 items-center justify-between rounded-md border border-dashed border-border bg-surface px-4 py-3 text-xs text-text-secondary">
                   <span>Session expired. Re-register identity to post.</span>
                   <Link
                     href="/profile"
-                    className="rounded-md border border-slate-700 px-2 py-1 text-[11px] uppercase tracking-[2px] text-slate-300 transition hover:border-sky-500 hover:text-sky-300"
+                    className="rounded-md border border-border px-2 py-1 text-[11px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
                   >
                     Manage Session
                   </Link>
@@ -1632,23 +1670,23 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
               />
             )}
             {feedError && (
-              <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+              <div className="rounded-2xl border border-primary/40 bg-primary/10 p-3 text-sm text-primary">
                 {feedError}
               </div>
             )}
             {feedLoading && !feedError && (
               <div className="space-y-3">
                 {[0, 1, 2].map(index => (
-                  <div key={index} className="h-32 rounded-2xl border border-slate-800 bg-slate-900/40 animate-pulse" />
+                  <div key={index} className="h-32 rounded-2xl border border-border bg-surface animate-pulse" />
                 ))}
               </div>
             )}
             {!feedLoading && effectiveIdentity && !sessionToken && (
-              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
-                <p>Your session expired. Re-link your Access identity to continue participating.</p>
+              <div className="rounded-2xl border border-primary/30 bg-primary/10 p-4 text-xs text-primary">
+                <p>{accessCopy.forbidden}</p>
                 <Link
                   href="/profile"
-                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-amber-200 underline-offset-4 hover:text-amber-100 hover:underline"
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary underline-offset-4 hover:text-primary hover:underline"
                 >
                   Re-link session →
                 </Link>
@@ -1698,16 +1736,16 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
 
           {showDevTools && (
             <>
-          <form onSubmit={handleSendReaction} className="mt-8 mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Send Test Reaction</h2>
+          <form onSubmit={handleSendReaction} className="mt-8 mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Send Test Reaction</h2>
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Post
                 <select
                   name="reactionPostId"
                   value={reactionPostId}
                   onChange={event => setReactionPostId(event.target.value)}
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   disabled={posts.length === 0}
                 >
                   {posts.map(post => (
@@ -1719,22 +1757,22 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                   {posts.length === 0 && <option value="">No posts</option>}
                 </select>
               </label>
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 User ID
                 <input
                   name="reactionUserId"
                   value={reactionUserId}
                   onChange={event => setReactionUserId(event.target.value)}
                   placeholder="Copy from identity"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   required
                 />
               </label>
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Action
                 <select
                   name="reactionAction"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   defaultValue="like"
                 >
                   <option value="like">Like</option>
@@ -1747,73 +1785,73 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
               <button
                 type="submit"
                 disabled={reactionLoading || !reactionPostId}
-                className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
               >
                 {reactionLoading ? 'Sending…' : 'Send Reaction'}
               </button>
               {reactionStatus && (
-                <p className="text-xs text-slate-400">{reactionStatus}</p>
+                <p className="text-xs text-text-secondary">{reactionStatus}</p>
               )}
             </div>
           </form>
 
-          <form onSubmit={handleInject} className="mb-8 rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/30">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-slate-400">Inject Test Event</h2>
+          <form onSubmit={handleInject} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Inject Test Event</h2>
             <div className="mt-4 flex flex-wrap gap-4">
-              <label className="flex flex-1 min-w-[160px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-1 min-w-[160px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Event Type
                 <input
                   name="eventType"
                   defaultValue="note"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                 />
               </label>
-              <label className="flex flex-[2] min-w-[200px] flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-[2] min-w-[200px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Message
                 <input
                   name="payload"
                   placeholder="Hello from the UI"
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                 />
               </label>
               <button
                 type="submit"
-                className="self-end rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400"
+                className="self-end rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark"
               >
                 Broadcast
               </button>
             </div>
           </form>
 
-          <h2 className="text-lg font-semibold text-slate-200">Event Stream</h2>
-          <p className="text-xs text-slate-500">Newest events at the bottom.</p>
+          <h2 className="text-lg font-semibold text-text-primary">Event Stream</h2>
+          <p className="text-xs text-text-tertiary">Newest events at the bottom.</p>
 
           <div className="mt-4 space-y-4">
             {sortedEvents.map(event => (
               <article
                 key={event.id}
-                className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-sm shadow-slate-950/20"
+                className="rounded-xl border border-border bg-surface p-4 shadow-md"
               >
-                <header className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
-                  <span className="font-mono text-sky-200">{event.traceId}</span>
-                  <time className="font-medium text-slate-300">
+                <header className="flex flex-wrap items-center justify-between gap-3 text-xs text-text-tertiary">
+                  <span className="font-mono text-primary">{event.traceId}</span>
+                  <time className="font-medium text-text-secondary">
                     {new Date(event.timestamp).toLocaleTimeString()}
                   </time>
                 </header>
                 <div className="mt-3">
-                  <span className="inline-flex items-center gap-2 rounded-full bg-sky-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-sky-300">
+                  <span className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-primary">
                     {event.event}
                   </span>
                 </div>
-                <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-950/70 p-3 text-xs text-slate-200">
+                <pre className="mt-3 overflow-x-auto rounded-lg bg-background/70 p-3 text-xs text-text-primary">
                   {JSON.stringify(event.data, null, 2)}
                 </pre>
               </article>
             ))}
 
             {sortedEvents.length === 0 && (
-              <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center text-sm text-slate-500">
-                Waiting for events… use the smoke test or POST to <code className="bg-slate-900 px-1">/boards/{boardId}/events</code> to
+              <div className="rounded-xl border border-dashed border-border bg-surface p-8 text-center text-sm text-text-tertiary">
+                Waiting for events… use the smoke test or POST to <code className="bg-surface px-1">/boards/{boardId}/events</code> to
                 simulate activity.
               </div>
             )}
@@ -1872,14 +1910,14 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             onClick={handleComposerClose}
             aria-label="Close composer"
           />
-          <div className="relative z-10 w-full max-w-lg rounded-t-3xl border border-slate-800 bg-slate-900 p-6 shadow-xl sm:rounded-3xl">
+          <div className="relative z-10 w-full max-w-lg rounded-t-3xl border border-border bg-surface p-6 shadow-xl sm:rounded-3xl">
             <form onSubmit={handleComposerSubmit} className="space-y-4">
               <header>
-                <p className="text-xs uppercase tracking-[2px] text-slate-500">Post to {friendlyBoardName}</p>
-                <h3 className="mt-1 text-lg font-semibold text-slate-100">What’s happening here?</h3>
+                <p className="text-xs uppercase tracking-[2px] text-text-tertiary">Post to {friendlyBoardName}</p>
+                <h3 className="mt-1 text-lg font-semibold text-text-primary">What’s happening here?</h3>
               </header>
               {isTextOnlyBoard && (
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                <div className="rounded-xl border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary">
                   Images are disabled for this board. Share a quick text update to reach your neighbors.
                 </div>
               )}
@@ -1887,17 +1925,17 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 value={composerBody}
                 onChange={event => setComposerBody(event.target.value.slice(0, MAX_POST_CHARACTERS))}
                 placeholder="Share a quick update or ask a question."
-                className="h-32 w-full resize-none rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+                className="h-32 w-full resize-none rounded-xl border border-border bg-background px-3 py-2 text-base text-text-primary placeholder:text-text-tertiary focus:border-primary focus:outline-none"
               />
-              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-text-secondary">
                 <span>{Math.max(0, remainingCharacters)} characters remaining</span>
                 <label className="flex items-center gap-2">
-                  <span className="text-slate-500">Post as</span>
+                  <span className="text-text-tertiary">Post as</span>
                   <input
                     value={composerAuthor}
                     onChange={event => setComposerAuthor(event.target.value)}
                     placeholder={alias?.alias ?? identity?.pseudonym ?? 'Anonymous'}
-                    className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-1 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+                    className="rounded-lg border border-border bg-background px-3 py-1 text-sm text-text-primary placeholder:text-text-tertiary focus:border-primary focus:outline-none"
                   />
                 </label>
               </div>
@@ -1905,7 +1943,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 <button
                   type="button"
                   onClick={handleComposerClose}
-                  className="rounded-md border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+                  className="rounded-md border border-border px-4 py-2 text-sm font-semibold text-text-secondary transition hover:border-primary hover:text-primary"
                   disabled={composerSubmitting}
                 >
                   Cancel
@@ -1913,7 +1951,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 <button
                   type="submit"
                   disabled={composerSubmitting || !composerBody.trim()}
-                  className="rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
                 >
                   {composerSubmitting ? 'Posting…' : 'Post'}
                 </button>
@@ -2005,7 +2043,7 @@ function IdentityOnboardingModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4">
       <button type="button" className="absolute inset-0" onClick={onClose} aria-label="Close identity modal" />
-      <div className="relative z-10 w-full max-w-md rounded-3xl border border-slate-800 bg-slate-950 p-6 text-slate-100 shadow-xl">
+      <div className="relative z-10 w-full max-w-md rounded-3xl border border-border bg-background p-6 text-text-primary shadow-xl">
         <header className="mb-4 space-y-1">
           <h2 className="text-lg font-semibold">
             {mode === 'register'
@@ -2014,54 +2052,54 @@ function IdentityOnboardingModal({
                 ? 'Set your board alias'
                 : 'Refresh your posting session'}
           </h2>
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-text-secondary">
             {mode === 'register'
               ? 'Pick a pseudonym students will see across boards. You can add a board-specific alias now or later.'
               : mode === 'alias'
                 ? 'Update how neighbors see you on this board. Aliases stay local and override your global pseudonym.'
-                : 'Your session expired. Refresh to keep posting and reacting without losing progress.'}
+                : sessionCopy.expired}
           </p>
         </header>
 
         {mode === 'register' || mode === 'alias' ? (
           <form onSubmit={handleSubmit} className="space-y-4">
             {showPseudonymField && (
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Pseudonym
                 <input
                   value={pseudonym}
                   onChange={event => setPseudonym(event.target.value)}
                   placeholder="e.g. CampusScout"
-                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   autoFocus
                 />
               </label>
             )}
             {showPseudonymField && touched && !pseudonym.trim() && (
-              <p className="text-xs text-rose-300">Pseudonym is required.</p>
+              <p className="text-xs text-primary">Pseudonym is required.</p>
             )}
             {showAliasField && (
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-slate-500">
+              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
                 Board alias (optional)
                 <input
                   value={aliasValue}
                   onChange={event => setAliasValue(event.target.value)}
                   placeholder="LibraryLookout"
-                  className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:border-sky-500 focus:outline-none"
+                  className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                   autoFocus={mode === 'alias'}
                 />
               </label>
             )}
             {mode === 'alias' && touched && !aliasValue.trim() && (
-              <p className="text-xs text-rose-300">Alias cannot be empty.</p>
+              <p className="text-xs text-primary">Alias cannot be empty.</p>
             )}
-            {mode === 'register' && identityError && <p className="text-xs text-rose-300">{identityError}</p>}
-            {aliasError && <p className="text-xs text-rose-300">{aliasError}</p>}
+            {mode === 'register' && identityError && <p className="text-xs text-primary">{identityError}</p>}
+            {aliasError && <p className="text-xs text-primary">{aliasError}</p>}
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+                className="rounded-full border border-border px-4 py-2 text-sm font-semibold text-text-secondary transition hover:border-primary hover:text-primary"
               >
                 Cancel
               </button>
@@ -2071,7 +2109,7 @@ function IdentityOnboardingModal({
                   {mode === 'register'
                     ? loading || (!pseudonym.trim() && touched)
                     : aliasLoading || (mode === 'alias' && touched && !aliasValue.trim())}
-                className="rounded-full bg-sky-500 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                className="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
               >
                 {loading || aliasLoading ? 'Saving…' : mode === 'alias' ? 'Save alias' : 'Continue'}
               </button>
@@ -2079,12 +2117,12 @@ function IdentityOnboardingModal({
           </form>
         ) : (
           <div className="space-y-4">
-            {sessionMessage && <p className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-300">{sessionMessage}</p>}
+            {sessionMessage && <p className="rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">{sessionMessage}</p>}
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+                className="rounded-full border border-border px-4 py-2 text-sm font-semibold text-text-secondary transition hover:border-primary hover:text-primary"
               >
                 Cancel
               </button>
@@ -2092,7 +2130,7 @@ function IdentityOnboardingModal({
                 type="button"
                 onClick={onRefreshSession}
                 disabled={sessionRefreshing}
-                className="rounded-full bg-sky-500 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                className="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
               >
                 {sessionRefreshing ? 'Refreshing…' : 'Refresh session'}
               </button>

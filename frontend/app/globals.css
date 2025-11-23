@@ -3,24 +3,30 @@
 :root {
   color-scheme: light;
 
+  /* Minimal campus palette */
+  --ui-color-ink: #031106;
+  --ui-color-paper: #e8eaed;
+  --ui-color-accent: #791217;
+
   /* Light theme color tokens */
-  --ui-color-background: #ffffff;
-  --ui-color-surface: #f9fafb;
-  --ui-color-surface-raised: #ffffff;
-  --ui-color-border: #e5e7eb;
-  --ui-color-primary: #4f46e5;
-  --ui-color-primary-light: #818cf8;
-  --ui-color-primary-dark: #3730a3;
-  --ui-color-secondary: #10b981;
-  --ui-color-danger: #ef4444;
-  --ui-color-warning: #f59e0b;
-  --ui-color-success: #10b981;
-  --ui-color-text-primary: #111827;
-  --ui-color-text-secondary: #6b7280;
-  --ui-color-text-tertiary: #9ca3af;
-  --ui-color-accent-live: #ef4444;
-  --ui-color-accent-heat-start: #f59e0b;
-  --ui-color-accent-heat-end: #ef4444;
+  --ui-color-background: var(--ui-color-paper);
+  --ui-color-surface: color-mix(in srgb, var(--ui-color-paper) 95%, var(--ui-color-ink) 5%);
+  --ui-color-surface-raised: color-mix(in srgb, var(--ui-color-paper) 98%, var(--ui-color-ink) 2%);
+  --ui-color-border: color-mix(in srgb, var(--ui-color-ink) 18%, transparent);
+  --ui-color-primary: var(--ui-color-accent);
+  --ui-color-primary-light: color-mix(in srgb, var(--ui-color-accent) 70%, var(--ui-color-paper) 30%);
+  --ui-color-primary-dark: color-mix(in srgb, var(--ui-color-accent) 85%, var(--ui-color-ink) 15%);
+  --ui-color-secondary: color-mix(in srgb, var(--ui-color-ink) 70%, var(--ui-color-paper) 30%);
+  --ui-color-danger: var(--ui-color-accent);
+  --ui-color-warning: color-mix(in srgb, var(--ui-color-accent) 55%, var(--ui-color-paper) 45%);
+  --ui-color-success: color-mix(in srgb, var(--ui-color-ink) 75%, var(--ui-color-paper) 25%);
+  --ui-color-text-primary: var(--ui-color-ink);
+  --ui-color-text-secondary: color-mix(in srgb, var(--ui-color-ink) 65%, var(--ui-color-paper) 35%);
+  --ui-color-text-tertiary: color-mix(in srgb, var(--ui-color-ink) 45%, var(--ui-color-paper) 55%);
+  --ui-color-text-inverse: var(--ui-color-paper);
+  --ui-color-accent-live: var(--ui-color-accent);
+  --ui-color-accent-heat-start: var(--ui-color-accent);
+  --ui-color-accent-heat-end: color-mix(in srgb, var(--ui-color-accent) 80%, var(--ui-color-paper) 20%);
 
   /* Spacing tokens (8pt grid) */
   --ui-space-xs: 4px;
@@ -49,25 +55,24 @@
 }
 
 [data-theme="dark"] {
-  color-scheme: dark;
-
-  --ui-color-background: #111827;
-  --ui-color-surface: #1f2937;
-  --ui-color-surface-raised: #374151;
-  --ui-color-border: #4b5563;
-  --ui-color-primary: #818cf8;
-  --ui-color-primary-light: #a5b4fc;
-  --ui-color-primary-dark: #4f46e5;
-  --ui-color-secondary: #34d399;
-  --ui-color-danger: #f87171;
-  --ui-color-warning: #fbbf24;
-  --ui-color-success: #34d399;
-  --ui-color-text-primary: #f9fafb;
-  --ui-color-text-secondary: #9ca3af;
-  --ui-color-text-tertiary: #6b7280;
-  --ui-color-accent-live: #ef4444;
-  --ui-color-accent-heat-start: rgba(245, 158, 11, 0.85);
-  --ui-color-accent-heat-end: rgba(239, 68, 68, 0.9);
+  color-scheme: light;
+  --ui-color-background: var(--ui-color-background);
+  --ui-color-surface: var(--ui-color-surface);
+  --ui-color-surface-raised: var(--ui-color-surface-raised);
+  --ui-color-border: var(--ui-color-border);
+  --ui-color-primary: var(--ui-color-primary);
+  --ui-color-primary-light: var(--ui-color-primary-light);
+  --ui-color-primary-dark: var(--ui-color-primary-dark);
+  --ui-color-secondary: var(--ui-color-secondary);
+  --ui-color-danger: var(--ui-color-danger);
+  --ui-color-warning: var(--ui-color-warning);
+  --ui-color-success: var(--ui-color-success);
+  --ui-color-text-primary: var(--ui-color-text-primary);
+  --ui-color-text-secondary: var(--ui-color-text-secondary);
+  --ui-color-text-tertiary: var(--ui-color-text-tertiary);
+  --ui-color-accent-live: var(--ui-color-accent-live);
+  --ui-color-accent-heat-start: var(--ui-color-accent-heat-start);
+  --ui-color-accent-heat-end: var(--ui-color-accent-heat-end);
 }
 
 :root[data-theme="light"] {
@@ -76,30 +81,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    color-scheme: dark;
-
-    --ui-color-background: #111827;
-    --ui-color-surface: #1f2937;
-    --ui-color-surface-raised: #374151;
-    --ui-color-border: #4b5563;
-    --ui-color-primary: #818cf8;
-    --ui-color-primary-light: #a5b4fc;
-    --ui-color-primary-dark: #4f46e5;
-    --ui-color-secondary: #34d399;
-    --ui-color-danger: #f87171;
-    --ui-color-warning: #fbbf24;
-    --ui-color-success: #34d399;
-    --ui-color-text-primary: #f9fafb;
-    --ui-color-text-secondary: #9ca3af;
-    --ui-color-text-tertiary: #6b7280;
-    --ui-color-accent-live: #ef4444;
-    --ui-color-accent-heat-start: rgba(245, 158, 11, 0.85);
-    --ui-color-accent-heat-end: rgba(239, 68, 68, 0.9);
+    color-scheme: light;
   }
 }
 
 @theme {
   /* Colors */
+  --color-ink: var(--ui-color-ink);
+  --color-paper: var(--ui-color-paper);
   --color-background: var(--ui-color-background);
   --color-surface: var(--ui-color-surface);
   --color-surface-raised: var(--ui-color-surface-raised);
@@ -114,6 +103,7 @@
   --color-text-primary: var(--ui-color-text-primary);
   --color-text-secondary: var(--ui-color-text-secondary);
   --color-text-tertiary: var(--ui-color-text-tertiary);
+  --color-text-inverse: var(--ui-color-text-inverse);
   --color-accent-live: var(--ui-color-accent-live);
   --color-accent-heat-start: var(--ui-color-accent-heat-start);
   --color-accent-heat-end: var(--ui-color-accent-heat-end);

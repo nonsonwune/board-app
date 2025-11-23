@@ -5,7 +5,7 @@ import { MapContainer, TileLayer, Circle, CircleMarker, useMapEvents } from 'rea
 import type { Map as LeafletMap } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-interface BoardLocationPickerProps {
+export interface BoardLocationPickerProps {
   latitude: number | null;
   longitude: number | null;
   radiusMeters?: number | null;
@@ -33,11 +33,22 @@ export default function BoardLocationPicker({ latitude, longitude, radiusMeters,
   }, [latitude, longitude]);
 
   const effectiveRadius = typeof radiusMeters === 'number' && radiusMeters > 0 ? radiusMeters : 1500;
+  const isClient = typeof window !== 'undefined';
 
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!isClient || !mapRef.current) return;
     mapRef.current.setView([position.latitude, position.longitude]);
-  }, [position.latitude, position.longitude]);
+  }, [isClient, position.latitude, position.longitude]);
+
+  if (!isClient) {
+    return (
+      <div className="overflow-hidden rounded-2xl border border-border/60">
+        <div className="flex h-[260px] w-full items-center justify-center bg-surface text-sm text-text-secondary">
+          Map preview available on the client
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="overflow-hidden rounded-2xl border border-border/60">
@@ -47,8 +58,8 @@ export default function BoardLocationPicker({ latitude, longitude, radiusMeters,
         scrollWheelZoom={false}
         style={{ height: 260, width: '100%' }}
         className="leaflet-map"
-        whenCreated={instance => {
-          mapRef.current = instance;
+        ref={instance => {
+          mapRef.current = instance ?? null;
         }}
       >
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />

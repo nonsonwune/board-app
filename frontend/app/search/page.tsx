@@ -189,7 +189,7 @@ export default function SearchPage() {
 
             <button
               type="submit"
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-white transition hover:bg-primary-light disabled:cursor-not-allowed disabled:opacity-70"
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-light disabled:cursor-not-allowed disabled:opacity-70"
               disabled={loading}
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SearchIcon className="h-4 w-4" />}
@@ -221,7 +221,7 @@ export default function SearchPage() {
         </section>
 
         {error && (
-          <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200">
+          <div className="rounded-2xl border border-primary/40 bg-primary/10 p-4 text-sm text-primary">
             {error}
           </div>
         )}
