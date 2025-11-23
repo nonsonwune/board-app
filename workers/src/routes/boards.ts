@@ -311,8 +311,18 @@ app.post('/:boardId/posts', async (c) => {
     }
 
     const board = await getOrCreateBoard(c.env, boardId);
-    if (board.text_only && data.images && data.images.length > 0) {
-        return c.json({ error: 'This board is text-only', trace_id: traceId }, 400);
+
+    // Check if images are provided
+    if (data.images && data.images.length > 0) {
+        // Check global image upload flag
+        if (!c.env.ENABLE_IMAGE_UPLOADS || c.env.ENABLE_IMAGE_UPLOADS !== 'true') {
+            return c.json({ error: 'Image uploads are currently disabled', trace_id: traceId }, 403);
+        }
+
+        // Check board-specific restrictions
+        if (board.text_only) {
+            return c.json({ error: 'Images are disabled for this board', trace_id: traceId }, 403);
+        }
     }
 
     const imageIds: string[] = [];

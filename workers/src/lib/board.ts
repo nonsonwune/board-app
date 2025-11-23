@@ -179,10 +179,10 @@ export async function upsertBoardAlias(
 
 export async function getBoardAlias(env: Env, boardId: string, userId: string): Promise<BoardAlias | null> {
     const record = await env.BOARD_DB.prepare(
-        'SELECT id, board_id, user_id, alias, created_at FROM board_aliases WHERE board_id = ?1 AND user_id = ?2'
+        'SELECT id, board_id, user_id, alias, alias_normalized, created_at FROM board_aliases WHERE board_id = ?1 AND user_id = ?2'
     )
         .bind(boardId, userId)
-        .first<{ id: string; board_id: string; user_id: string; alias: string; created_at: number }>();
+        .first<{ id: string; board_id: string; user_id: string; alias: string; alias_normalized: string; created_at: number }>();
 
     if (!record) {
         return null;
@@ -193,6 +193,7 @@ export async function getBoardAlias(env: Env, boardId: string, userId: string): 
         boardId: record.board_id,
         userId: record.user_id,
         alias: record.alias,
+        aliasNormalized: record.alias_normalized,
         createdAt: record.created_at
     };
 }
@@ -385,6 +386,9 @@ export async function listBoardsCatalog(env: Env, options: { limit?: number } = 
                     : null;
 
             const radiusMeters = record.radius_meters ?? undefined;
+            const radiusLabel = radiusMeters
+                ? `${radiusMeters.toLocaleString('en-US')} m radius`
+                : null;
 
             return {
                 id: boardId,
@@ -400,6 +404,7 @@ export async function listBoardsCatalog(env: Env, options: { limit?: number } = 
                 postsLastDay,
                 postsTrend24Hr: trend,
                 lastPostAt: snapshot.lastPostAt,
+                radiusLabel,
                 latitude: record.latitude ?? null,
                 longitude: record.longitude ?? null
             } satisfies BoardSummary;
@@ -529,6 +534,23 @@ export async function detectDeadZones(
                 traceId
             )
             .run();
+
+        // Emit alert event if dead zone triggered
+        if (alertTriggered) {
+            await env.BOARD_DB.prepare(
+                `INSERT INTO board_events (id, board_id, event_type, payload, created_at, trace_id)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+            )
+                .bind(
+                    crypto.randomUUID(),
+                    boardId,
+                    'board.dead_zone_triggered',
+                    JSON.stringify(snapshot),
+                    now,
+                    traceId
+                )
+                .run();
+        }
     }
 
     return {
