@@ -592,7 +592,8 @@ app.get('/:boardId/feed', async (c) => {
     const boardTextOnly = Boolean(board.text_only);
     const isPhaseOne = boardPhaseMode || phaseConfig.boards.has(normalizedBoardId);
     const isTextOnly = boardTextOnly || phaseConfig.textOnlyBoards.has(normalizedBoardId);
-    const phaseOneRadius = boardPhaseMode ? board.radius_meters ?? phaseConfig.radiusMeters : phaseConfig.radiusMeters;
+    // When board is in phase-one (either via DB flag or env var), use the configured radius
+    const phaseOneRadius = phaseConfig.radiusMeters;
     const now = Date.now();
     const posts = await listPosts(c.env, boardId, limit, { now });
 
