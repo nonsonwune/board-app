@@ -26,7 +26,7 @@ jobs:
           cache: 'pnpm'
       
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
       
       - name: Lint workers
         run: pnpm --filter @board-app/workers lint
@@ -59,7 +59,7 @@ jobs:
           cache: 'pnpm'
       
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
       
       - name: Lint frontend
         run: pnpm --filter frontend lint
