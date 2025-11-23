@@ -1,29 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import WorkerEntrypoint, {
-
-  getOrCreateBoard,
-  createPost,
-  listBoardsCatalog,
-  listPosts,
-  listUserPosts,
-  listFollowingPosts,
-  searchBoardPosts,
-  snapshotBoardMetrics,
-  createUser,
-  upsertBoardAlias,
-  applyReaction,
-  getBoardAlias,
-  setFollowState,
-  getFollowCounts,
-  isFollowing,
-  listFollowingIds,
-  createReply,
   detectDeadZones,
   __internal
 } from '../index';
+import { getOrCreateBoard, snapshotBoardMetrics, listBoardsCatalog, upsertBoardAlias, getBoardAlias } from '../lib/board';
+import { createPost, listPosts, searchBoardPosts, listUserPosts, listFollowingPosts, createReply, applyReaction } from '../lib/post';
+import { createUser, setFollowState, getFollowCounts, isFollowing, listFollowingIds } from '../lib/user';
 import type { BoardCatalogResponse, BoardFeedResponse } from '@board-app/shared';
 import type { Env } from '../index';
+
+// applyReaction was in index.ts but was removed - need to check if it exists elsewhere
+// For now, let's create a stub or import from the correct location
 
 type ExecCall = { sql: string };
 
@@ -51,8 +39,8 @@ class MockPrepared {
     return new BoundPrepared(this.db, this.sql, []).first<T>();
   }
 
-  async raw<T>(): Promise<T[]> {
-    return [];
+  async raw<T extends unknown[] = unknown[]>(): Promise<T> {
+    return [] as unknown as T;
   }
 
 }
@@ -65,8 +53,8 @@ class BoundPrepared {
     return new BoundPrepared(this.db, this.sql, [...this.params, ...params]);
   }
 
-  async raw<T>(): Promise<T[]> {
-    return [];
+  async raw<T extends unknown[] = unknown[]>(): Promise<T> {
+    return [] as T;
   }
 
   async run() {
@@ -589,7 +577,7 @@ class MockD1 {
 
   async exec(sql: string) {
     this.execCalls.push({ sql });
-    return { success: true };
+    return { success: true, count: 0, duration: 0 };
   }
 
   prepare(sql: string) {
@@ -604,8 +592,14 @@ class MockD1 {
     return new ArrayBuffer(0);
   }
 
-  async withSession<T>(callback: (session: D1Database) => Promise<T>): Promise<T> {
-    return callback(this as unknown as D1Database);
+  withSession(constraintOrBookmark?: string): D1DatabaseSession {
+    // Return a session object that delegates to this MockD1
+    return {
+      exec: (sql: string) => this.exec(sql),
+      prepare: (sql: string) => this.prepare(sql),
+      batch: <T>(statements: D1PreparedStatement[]) => this.batch<T>(statements),
+      dump: () => this.dump()
+    } as D1DatabaseSession;
   }
 }
 
@@ -799,14 +793,16 @@ describe('storage helpers', () => {
 
     const authorRecord = env.BOARD_DB.users.get(author.id);
     expect(authorRecord).toBeDefined();
-    await createReply(env, {
-      board,
-      postId: post.id,
-      body: 'Count me in!',
-      author: alias.alias,
-      user: authorRecord!,
-      alias: alias.alias
-    });
+    await createReply(
+      env,
+      post.id,
+      board.id,
+      'Count me in!',
+      alias.alias,
+      author.id,
+      alias.alias,
+      author.pseudonym
+    );
 
     const posts = await listUserPosts(env, author.id, 5);
     expect(posts).toHaveLength(1);
@@ -965,8 +961,8 @@ describe('storage helpers', () => {
         streakThreshold: 2
       });
 
-      expect(report1.results).toHaveLength(2);
-      const quietSnapshot1 = report1.results.find(snapshot => snapshot.boardId === quietBoard.id);
+      expect(report1.snapshots).toHaveLength(2);
+      const quietSnapshot1 = report1.snapshots.find(snapshot => snapshot.boardId === quietBoard.id);
       expect(quietSnapshot1?.status).toBe('dead_zone');
       expect(quietSnapshot1?.deadZoneStreak).toBe(1);
       expect(quietSnapshot1?.alertTriggered).toBe(false);
@@ -979,14 +975,14 @@ describe('storage helpers', () => {
         streakThreshold: 2
       });
 
-      const quietSnapshot2 = report2.results.find(snapshot => snapshot.boardId === quietBoard.id);
+      const quietSnapshot2 = report2.snapshots.find(snapshot => snapshot.boardId === quietBoard.id);
       expect(quietSnapshot2?.status).toBe('dead_zone');
       expect(quietSnapshot2?.deadZoneStreak).toBe(2);
       expect(quietSnapshot2?.alertTriggered).toBe(true);
       expect(report2.alerts).toHaveLength(1);
       expect(report2.alerts[0].boardId).toBe(quietBoard.id);
 
-      const healthySnapshot = report2.results.find(snapshot => snapshot.boardId === healthyBoard.id);
+      const healthySnapshot = report2.snapshots.find(snapshot => snapshot.boardId === healthyBoard.id);
       expect(healthySnapshot?.status).toBe('healthy');
       expect(healthySnapshot?.deadZoneStreak).toBe(0);
 
@@ -1018,7 +1014,7 @@ describe('storage helpers', () => {
       waitUntil: (_promise: Promise<unknown>) => { }
     } as ExecutionContext;
 
-    await worker.scheduled!(scheduledEvent, env, ctx);
+    await worker.scheduled(scheduledEvent, env);
 
     const selectBoardsCall = env.BOARD_DB.prepareCalls.find(call => call.sql.includes('SELECT id FROM boards'));
     expect(selectBoardsCall).toBeDefined();
@@ -1124,7 +1120,7 @@ describe('storage helpers', () => {
     } as ExecutionContext;
     const response = await WorkerEntrypoint.fetch(request, env, ctx);
     expect(response.status).toBe(403);
-    const payload = await response.json();
+    const payload = await response.json() as { error?: string };
     expect(payload.error).toMatch(/image uploads are currently disabled/i);
   });
 
@@ -1145,7 +1141,7 @@ describe('storage helpers', () => {
     } as ExecutionContext;
     const response = await WorkerEntrypoint.fetch(request, env, ctx);
     expect(response.status).toBe(403);
-    const payload = await response.json();
+    const payload = await response.json() as { error?: string };
     expect(payload.error).toMatch(/disabled for this board/i);
   });
 
@@ -1165,7 +1161,7 @@ describe('storage helpers', () => {
     } as ExecutionContext;
     const response = await WorkerEntrypoint.fetch(request, env, ctx);
     expect(response.status).toBe(201);
-    const payload = await response.json();
+    const payload = await response.json() as { post: { images?: string[] } };
     expect(payload.post.images).toEqual(['hero']);
   });
 

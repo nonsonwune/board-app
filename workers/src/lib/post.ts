@@ -95,6 +95,74 @@ export async function updateReactionCounts(
     return { total, likeCount, dislikeCount };
 }
 
+export async function applyReaction(
+    env: Env,
+    boardId: string,
+    postId: string,
+    userId: string,
+    action: 'like' | 'dislike' | 'remove'
+): Promise<{ likeCount: number; dislikeCount: number; total: number }> {
+    // Get current reaction
+    const existing = await env.BOARD_DB.prepare(
+        'SELECT id, reaction FROM reactions WHERE post_id = ?1 AND user_id = ?2'
+    )
+        .bind(postId, userId)
+        .first<{ id: string; reaction: number }>();
+
+    const currentReaction = existing?.reaction === 1 ? 'like' : existing?.reaction === -1 ? 'dislike' : null;
+
+    // Determine new reaction
+    let newReaction: 'like' | 'dislike' | null = null;
+    if (action === 'like') newReaction = 'like';
+    else if (action === 'dislike') newReaction = 'dislike';
+
+    // If no change, return current counts
+    if (currentReaction === newReaction) {
+        const counts = await env.BOARD_DB.prepare(
+            'SELECT like_count, dislike_count FROM posts WHERE id = ?1'
+        )
+            .bind(postId)
+            .first<{ like_count: number; dislike_count: number }>();
+        return {
+            likeCount: counts?.like_count ?? 0,
+            dislikeCount: counts?.dislike_count ?? 0,
+            total: (counts?.like_count ?? 0) + (counts?.dislike_count ?? 0)
+        };
+    }
+
+    // Update reaction in DB
+    if (newReaction) {
+        const reactionValue = newReaction === 'like' ? 1 : -1;
+        await env.BOARD_DB.prepare(
+            'INSERT INTO reactions (id, post_id, board_id, user_id, reaction, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(post_id, user_id) DO UPDATE SET reaction = excluded.reaction'
+        )
+            .bind(crypto.randomUUID(), postId, boardId, userId, reactionValue, Date.now())
+            .run();
+    } else {
+        await env.BOARD_DB.prepare(
+            'DELETE FROM reactions WHERE post_id = ?1 AND user_id = ?2'
+        )
+            .bind(postId, userId)
+            .run();
+    }
+
+    // Recompute counts
+    const counts = await env.BOARD_DB.prepare(
+        `SELECT
+            SUM(CASE WHEN reaction = 1 THEN 1 ELSE 0 END) as likes,
+            SUM(CASE WHEN reaction = -1 THEN 1 ELSE 0 END) as dislikes
+         FROM reactions
+         WHERE post_id = ?1`
+    )
+        .bind(postId)
+        .first<{ likes: number; dislikes: number }>();
+
+    const likeCount = counts?.likes ?? 0;
+    const dislikeCount = counts?.dislikes ?? 0;
+
+    return await updateReactionCounts(env, postId, likeCount, dislikeCount);
+}
+
 interface ReplyRow {
     id: string;
     post_id: string;

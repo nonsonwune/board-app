@@ -20,9 +20,7 @@ import {
     createReply,
     updateReactionCounts,
     listReplies,
-    listPosts,
-    searchBoardPosts,
-    extractTrendingTopics
+    listPosts
 } from '../lib/post';
 import {
     CreatePostSchema,
@@ -238,7 +236,7 @@ app.post('/:boardId/events', async (c) => {
     const bodyText = await response.text();
     if (response.ok) {
         try {
-            const parsed = JSON.parse(bodyText) as { event?: any }; // simplified type
+            const parsed = JSON.parse(bodyText) as { event?: { id: string; event: string; data: unknown; traceId: string; timestamp: number } };
             const record = parsed.event;
             if (record) {
                 const room = getBoardRoom(boardId);
@@ -260,7 +258,7 @@ app.post('/:boardId/events', async (c) => {
         return c.json(JSON.parse(bodyText), 200); // Return original response
     }
 
-    return c.json({ error: 'upstream error' }, response.status as any);
+    return c.json({ error: 'upstream error' }, response.status as 400 | 404 | 500);
 });
 
 // POST /:boardId/posts
@@ -299,8 +297,8 @@ app.post('/:boardId/posts', async (c) => {
     let author = data.author?.trim()?.slice(0, 64) ?? null;
     const userId = data.userId?.trim() ?? null;
 
-    let user: any = null; // simplified type
-    let aliasRecord: any = null;
+    let user: { id: string; pseudonym: string } | null = null;
+    let aliasRecord: { alias: string } | null = null;
     if (userId) {
         await ensureSession(c.req.raw, c.env, userId);
         user = await getUserById(c.env, userId);
@@ -431,7 +429,7 @@ app.put('/:boardId/posts/:postId/reactions', async (c) => {
         });
     }
 
-    const statements: any[] = [];
+    const statements: D1PreparedStatement[] = [];
     if (newType) {
         statements.push(
             c.env.BOARD_DB.prepare(
@@ -538,8 +536,8 @@ app.post('/:boardId/posts/:postId/replies', async (c) => {
     let author = data.author?.trim()?.slice(0, 64) ?? null;
     const userId = data.userId?.trim() ?? null;
 
-    let user: any = null;
-    let aliasRecord: any = null;
+    let user: { id: string; pseudonym: string } | null = null;
+    let aliasRecord: { alias: string } | null = null;
     if (userId) {
         await ensureSession(c.req.raw, c.env, userId);
         user = await getUserById(c.env, userId);

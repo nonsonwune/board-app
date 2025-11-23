@@ -28,10 +28,10 @@ app.get('/profiles/:handle', async (c) => {
     }
 
     const user = await c.env.BOARD_DB.prepare(
-        'SELECT * FROM users WHERE pseudonym_normalized = ?1'
+        'SELECT id, pseudonym, pseudonym_normalized, created_at, status FROM users WHERE pseudonym_normalized = ?1'
     )
         .bind(normalized)
-        .first<any>();
+        .first<{ id: string; pseudonym: string; pseudonym_normalized: string; created_at: number; status: string }>();
 
     if (!user) {
         return c.json({ error: 'user not found' }, 404);

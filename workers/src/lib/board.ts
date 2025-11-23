@@ -1,4 +1,4 @@
-import type { Env, ApiError } from '../types';
+import type { Env } from '../types';
 import { normalizeBoardId } from '../utils';
 import type { BoardAlias, BoardSummary, BoardEventPayload } from '@board-app/shared';
 import type { RadiusState } from '@board-app/shared/location';

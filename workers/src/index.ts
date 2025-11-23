@@ -4,28 +4,22 @@ import authRoutes from './routes/auth';
 import boardsRoutes from './routes/boards';
 import postsRoutes from './routes/posts';
 import usersRoutes from './routes/users';
-import { BoardRoom, type BoardWebSocket } from './board-room';
+import type { BoardWebSocket } from './board-room';
 import {
   getBoardRoom,
   detectDeadZones,
   snapshotBoardMetrics,
-  persistEvent,
   boardRooms
 } from './lib/board';
-import { BoardRoomDO } from './durable-objects/board-room';
 import {
   resolveAccessUser,
   ensureAccessPrincipalForUser,
   deriveAccessPseudonym
 } from './lib/user';
-import {
-  getSessionFromRequest
-} from './lib/session';
 
 export { BoardRoomDO } from './durable-objects/board-room';
 
 
-type WebSocketRequest = Request & { webSocket?: WebSocket };
 
 export interface Env {
   BOARD_DB: D1Database;
