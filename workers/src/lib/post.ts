@@ -149,16 +149,16 @@ export async function applyReaction(
     // Recompute counts
     const counts = await env.BOARD_DB.prepare(
         `SELECT
-            SUM(CASE WHEN reaction = 1 THEN 1 ELSE 0 END) as likes,
-            SUM(CASE WHEN reaction = -1 THEN 1 ELSE 0 END) as dislikes
+            SUM(CASE WHEN reaction = 1 THEN 1 ELSE 0 END) as like_count,
+            SUM(CASE WHEN reaction = -1 THEN 1 ELSE 0 END) as dislike_count
          FROM reactions
          WHERE post_id = ?1`
     )
         .bind(postId)
-        .first<{ likes: number; dislikes: number }>();
+        .first<{ like_count: number; dislike_count: number }>();
 
-    const likeCount = counts?.likes ?? 0;
-    const dislikeCount = counts?.dislikes ?? 0;
+    const likeCount = counts?.like_count ?? 0;
+    const dislikeCount = counts?.dislike_count ?? 0;
 
     return await updateReactionCounts(env, postId, likeCount, dislikeCount);
 }
