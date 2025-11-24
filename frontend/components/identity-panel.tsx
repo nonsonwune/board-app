@@ -254,6 +254,15 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
     }
   }
 
+  async function handleLogout() {
+    // Clear sensitive data from UI state before logout
+    setRecoveryKey(null);
+    setRegisterError(null);
+    setRecoverError(null);
+    await logout(workerBaseUrl);
+  }
+
+
   async function handleAliasSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!identity) {
@@ -279,7 +288,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
 
     const attempt = async () => {
       const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(aliasBoardId)}/aliases`, {
-        method: 'POST',
+        method: 'PUT',
         headers: {
           'content-type': 'application/json',
           Authorization: `Bearer ${session.token}`
@@ -523,7 +532,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                   </button>
                   <button
                     type="button"
-                    onClick={() => logout(workerBaseUrl)}
+                    onClick={handleLogout}
                     className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary"
                   >
                     Sign Out
