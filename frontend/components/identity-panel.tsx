@@ -95,6 +95,14 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
     throw error;
   };
 
+  // Clear recovery key when user logs out (identity becomes null)
+  useEffect(() => {
+    if (!identity) {
+      setRecoveryKey(null);
+    }
+  }, [identity]);
+
+
   const handleSessionError = async (
     error: unknown,
     setter: (msg: string) => void
@@ -627,7 +635,14 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
           )}
         </div>
         {aliasStatus && (
-          <p className="mt-3 rounded-lg border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{aliasStatus}</p>
+          <p className={`mt-3 rounded-lg border p-3 text-xs ${aliasStatus.toLowerCase().includes('failed') ||
+            aliasStatus.toLowerCase().includes('error') ||
+            aliasStatus.toLowerCase().includes('conflict')
+            ? 'border-red-500/40 bg-red-500/10 text-red-600'
+            : 'border-green-500/40 bg-green-500/10 text-green-600'
+            }`}>
+            {aliasStatus}
+          </p>
         )}
         {identity && aliasSuggestions.length > 0 && (
           <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">

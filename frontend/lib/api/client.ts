@@ -123,12 +123,12 @@ export class ApiClient {
     }
 
     async updateReaction(boardId: string, postId: string, data: UpdateReactionRequest): Promise<UpdateReactionResponse> {
-        return this.request('POST', `/boards/${boardId}/posts/${postId}/reactions`, data);
+        return this.request('PUT', `/boards/${boardId}/posts/${postId}/reactions`, data);
     }
 
     // Alias endpoints
     async upsertAlias(boardId: string, data: UpsertAliasRequest): Promise<UpsertAliasResponse> {
-        return this.request('POST', `/boards/${boardId}/aliases`, data);
+        return this.request('PUT', `/boards/${boardId}/aliases`, data);
     }
 
     async getAlias(boardId: string): Promise<GetAliasResponse> {

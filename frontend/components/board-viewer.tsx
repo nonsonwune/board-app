@@ -141,6 +141,12 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
   const sessionToken = session?.token ?? null;
   const { addToast } = useToast();
   const [heartbeatTick, setHeartbeatTick] = useState(() => Date.now());
+  const [mounted, setMounted] = useState(false);
+
+  // Track when component is mounted (client-side only)
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   const quietPrompts = useMemo(
     () => [
       {
@@ -809,7 +815,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         const res = await fetch(
           `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(postId)}/reactions`,
           {
-            method: 'POST',
+            method: 'PUT',
             headers: buildHeaders({ 'content-type': 'application/json' }),
             body: JSON.stringify({ userId, action }),
             credentials: 'include'
@@ -1440,7 +1446,9 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
             ·{' '}
             {isPhaseOneBoard
               ? `showing posts within a fixed ${radiusMetersDisplay ?? 1500} m radius`
-              : `showing posts within ${sharedAlias ? 'your saved radius' : 'an adaptive radius'}`}
+              : mounted && sharedAlias
+                ? 'showing posts within your saved radius'
+                : 'showing posts within an adaptive radius'}
           </p>
           {boardMeta?.description ? (
             <p className="text-sm text-text-tertiary">{boardMeta.description}</p>
