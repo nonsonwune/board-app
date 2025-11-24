@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, Home, Search, User, Users } from "lucide-react";
+import { Bell, Home, User, Users } from "lucide-react";
 import type { ComponentType } from "react";
 
 interface NavItem {
@@ -18,13 +18,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/profile", label: "Profile", icon: User }
 ];
 
-function isActivePath(pathname: string | null, href: string) {
-  if (!pathname) return false;
-  if (href === "/") {
-    return pathname === "/";
-  }
-  return pathname.startsWith(href);
-}
+
 
 export default function BottomNav() {
   const pathname = usePathname();

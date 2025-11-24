@@ -96,7 +96,7 @@ export default function OnboardingChecklist() {
         complete: boardComplete
       }
     ],
-    [verifyComplete, aliasComplete, boardComplete]
+    [verifyComplete, aliasComplete, boardComplete, aliasCount]
   );
 
   if (!open) {

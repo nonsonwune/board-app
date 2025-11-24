@@ -19,7 +19,7 @@ export default function NotificationsPage() {
                 </div>
                 <h2 className="text-lg font-medium text-text-primary">All caught up</h2>
                 <p className="mt-2 text-sm text-text-secondary max-w-xs">
-                    When you get replies or reactions, they'll show up here.
+                    When you get replies or reactions, they&apos;ll show up here.
                 </p>
             </div>
         </div>

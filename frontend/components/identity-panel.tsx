@@ -74,7 +74,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   const aliasEntries = useMemo(() => Object.entries(aliasMap).filter(([, value]) => value), [aliasMap]);
   const displayIdentity = hydrated ? identity : null;
   const displaySession = hydrated ? session : null;
-  const registerLabel = displayIdentity ? 'Re-register' : 'Register';
+
   const hasActiveIdentity = Boolean(displayIdentity?.id && displaySession?.token);
   const allowRegister = !hasActiveIdentity;
   const { addToast } = useToast();

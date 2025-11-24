@@ -323,7 +323,7 @@ export default function BoardPreview() {
               </div>
               <div className="space-y-2">
                 <dt className="uppercase tracking-[2px] text-text-inverse">Stay Connected</dt>
-                <dd>See what's happening right now with live posts and alerts.</dd>
+                <dd>See what&apos;s happening right now with live posts and alerts.</dd>
               </div>
             </dl>
           </div>
