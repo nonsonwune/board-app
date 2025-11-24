@@ -16,11 +16,12 @@ describe('User Management', () => {
                         run: async () => {
                             // Mock INSERT INTO users
                             if (sql.includes('INSERT INTO users')) {
-                                const [id, pseudonym, normalized, createdAt, status] = params;
+                                const [id, pseudonym, normalized, recoveryKeyHash, createdAt, status] = params;
                                 mockUsers.set(id as string, {
                                     id,
                                     pseudonym,
                                     pseudonym_normalized: normalized,
+                                    recovery_key_hash: recoveryKeyHash,
                                     created_at: createdAt,
                                     status
                                 });

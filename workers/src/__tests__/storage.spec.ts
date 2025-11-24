@@ -109,17 +109,7 @@ class BoundPrepared {
         created_at: createdAt
       });
     }
-    if (this.sql.startsWith('INSERT INTO board_events')) {
-      const [id, boardId, eventType, payload, traceId, createdAt] = this.params;
-      this.db.events.push({
-        id,
-        board_id: boardId,
-        event_type: eventType,
-        payload,
-        trace_id: traceId,
-        created_at: createdAt
-      });
-    }
+
     if (this.sql.startsWith('INSERT INTO board_metrics')) {
       const [boardId, snapshotAt, activeConnections, postsLastHour, postsLastDay, postsPrevDay, lastPostAt] = this.params;
       this.db.boardMetrics.set(boardId, {
@@ -1173,6 +1163,13 @@ describe('storage helpers', () => {
   it('rejects image uploads for text-only boards', async () => {
     env.PHASE_ONE_TEXT_ONLY_BOARDS = 'text-only-board';
     env.ENABLE_IMAGE_UPLOADS = 'true';
+
+    // Create the board and set text_only in the database
+    const board = await getOrCreateBoard(env, 'text-only-board');
+    const mockBoard = env.BOARD_DB.boards.get(board.id);
+    if (mockBoard) {
+      mockBoard.text_only = 1; // Set text_only flag in mock database
+    }
 
     const request = new Request('https://unit.test/boards/text-only-board/posts', {
       method: 'POST',

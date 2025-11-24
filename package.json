@@ -10,6 +10,7 @@
     "typecheck": "pnpm run --recursive typecheck",
     "test": "pnpm run --recursive test --if-present",
     "test:ci": "pnpm --filter @board-app/workers test:ci && pnpm --filter @board-app/shared test -- --run && pnpm --filter @board-app/frontend test -- --run",
+    "build": "pnpm --filter @board-app/frontend build",
     "lint:fix": "pnpm run --recursive lint --if-present -- --fix",
     "smoke:ws": "tsx scripts/ws-smoke-test.ts",
     "ci": "pnpm --filter @board-app/workers test -- --run && pnpm --filter @board-app/frontend test:e2e"
