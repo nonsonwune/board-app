@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "vitest"
   },
   "devDependencies": {

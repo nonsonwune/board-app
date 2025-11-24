@@ -237,7 +237,16 @@ export class BoardRoom {
     }
 
     if (ArrayBuffer.isView(data)) {
-      return new TextDecoder().decode(data.buffer);
+      // Handle both ArrayBuffer and SharedArrayBuffer
+      const buffer = data.buffer;
+      if (buffer instanceof ArrayBuffer) {
+        return new TextDecoder().decode(buffer);
+      } else {
+        // SharedArrayBuffer case - copy to ArrayBuffer first
+        const arrayBuffer = new ArrayBuffer(buffer.byteLength);
+        new Uint8Array(arrayBuffer).set(new Uint8Array(buffer));
+        return new TextDecoder().decode(arrayBuffer);
+      }
     }
 
     return null;

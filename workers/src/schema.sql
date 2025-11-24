@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   pseudonym TEXT NOT NULL UNIQUE,
   pseudonym_normalized TEXT NOT NULL UNIQUE,
+  recovery_key_hash TEXT,
   created_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'active'
 );

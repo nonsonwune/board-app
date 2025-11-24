@@ -18,6 +18,64 @@ import { FollowRequestSchema, FollowResponse, ProfileSummary } from '@board-app/
 
 const app = new Hono<{ Bindings: Env }>();
 
+// GET /profiles/:id (UUID)
+app.get('/profiles/:id', async (c) => {
+    const id = c.req.param('id');
+
+    // Basic UUID validation
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        return c.json({ error: 'invalid id format' }, 400);
+    }
+
+    const user = await getUserById(c.env, id);
+
+    if (!user) {
+        return c.json({ error: 'user not found' }, 404);
+    }
+
+    // Fetch additional data
+    const [aliases, recentPosts, counts] = await Promise.all([
+        listAliasesForUser(c.env, user.id),
+        listUserPosts(c.env, user.id, 10),
+        getFollowCounts(c.env, user.id)
+    ]);
+
+    const influence = calculateInfluenceScore(recentPosts);
+
+    // Check if requesting user is following this profile
+    let isFollowingUser = false;
+    let followingIds: string[] = [];
+    try {
+        const session = await getSessionFromRequest(c.req.raw, c.env);
+        if (session) {
+            isFollowingUser = await isFollowing(c.env, session.user_id, user.id);
+            if (session.user_id === user.id) {
+                followingIds = await listFollowingIds(c.env, user.id);
+            }
+        }
+    } catch {
+        // No session, ignore
+    }
+
+    const response: ProfileSummary = {
+        ok: true,
+        user: {
+            id: user.id,
+            pseudonym: user.pseudonym,
+            createdAt: user.created_at,
+            influence,
+            followerCount: counts.followerCount,
+            followingCount: counts.followingCount
+        },
+        aliases,
+        recentPosts,
+        viewerFollows: isFollowingUser,
+        followingIds: followingIds.length > 0 ? followingIds : undefined
+    };
+
+    return c.json(response);
+});
+
 // GET /profiles/:handle
 app.get('/profiles/:handle', async (c) => {
     const handle = c.req.param('handle');

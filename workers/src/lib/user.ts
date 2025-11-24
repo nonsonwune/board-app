@@ -11,9 +11,29 @@ export type UserRecord = {
     id: string;
     pseudonym: string;
     pseudonym_normalized: string;
+    recovery_key_hash?: string | null;
     created_at: number;
     status: 'active' | 'access_auto' | 'access_orphan';
 };
+
+export type UserProfileWithKey = UserProfile & { recoveryKey?: string };
+
+async function hashRecoveryKey(key: string): Promise<string> {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(key);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function generateRecoveryKey(): string {
+    // Generate a readable random key, e.g. 4 segments of 4 hex chars
+    const array = new Uint8Array(8);
+    crypto.getRandomValues(array);
+    const hex = Array.from(array).map(b => b.toString(16).padStart(2, '0')).join('');
+    // Format as xxxx-xxxx-xxxx-xxxx
+    return `${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}`;
+}
 
 async function recordAccessIdentityEvent(
     env: Env,
@@ -87,21 +107,23 @@ export async function createUser(
     pseudonym: string,
     normalized: string,
     status: 'active' | 'access_auto' | 'access_orphan' = 'active'
-): Promise<UserProfile> {
+): Promise<UserProfileWithKey> {
     const id = crypto.randomUUID();
     const createdAt = Date.now();
+    const recoveryKey = generateRecoveryKey();
+    const recoveryKeyHash = await hashRecoveryKey(recoveryKey);
 
     await env.BOARD_DB.prepare(
-        `INSERT INTO users (id, pseudonym, pseudonym_normalized, created_at, status)
-       VALUES (?1, ?2, ?3, ?4, ?5)`
+        `INSERT INTO users (id, pseudonym, pseudonym_normalized, recovery_key_hash, created_at, status)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
     )
-        .bind(id, pseudonym, normalized, createdAt, status)
+        .bind(id, pseudonym, normalized, recoveryKeyHash, createdAt, status)
         .run();
 
-    return { id, pseudonym, createdAt };
+    return { id, pseudonym, createdAt, recoveryKey };
 }
 
-async function createUserWithUniquePseudonym(env: Env, basePseudonym: string): Promise<UserProfile> {
+async function createUserWithUniquePseudonym(env: Env, basePseudonym: string): Promise<UserProfileWithKey> {
     let attempt = 0;
     while (attempt < 10) {
         const suffix = attempt === 0 ? '' : `-${attempt}`;
@@ -169,6 +191,34 @@ export async function getUserById(env: Env, userId: string): Promise<UserRecord 
         'SELECT id, pseudonym, pseudonym_normalized, created_at, status FROM users WHERE id = ?1'
     )
         .bind(userId)
+        .first<UserRecord>();
+
+    return record ?? null;
+}
+
+export async function verifyRecoveryKey(env: Env, userId: string, rawKey: string): Promise<boolean> {
+    const user = await env.BOARD_DB.prepare(
+        'SELECT recovery_key_hash FROM users WHERE id = ?1'
+    )
+        .bind(userId)
+        .first<{ recovery_key_hash: string | null }>();
+
+    if (!user || !user.recovery_key_hash) {
+        return false;
+    }
+
+    const inputHash = await hashRecoveryKey(rawKey);
+    return inputHash === user.recovery_key_hash;
+}
+
+export async function getUserByPseudonym(env: Env, pseudonym: string): Promise<UserRecord | null> {
+    const normalized = normalizeHandle(pseudonym);
+    if (!normalized) return null;
+
+    const record = await env.BOARD_DB.prepare(
+        'SELECT id, pseudonym, pseudonym_normalized, created_at, status FROM users WHERE pseudonym_normalized = ?1'
+    )
+        .bind(normalized)
         .first<UserRecord>();
 
     return record ?? null;

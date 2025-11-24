@@ -1,7 +1,6 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
-import { setCookie, deleteCookie, getCookie } from 'cookies-next';
 import type { RegisterIdentityResponse, BoardAlias, SessionTicket } from '@board-app/shared';
 import { SESSION_TTL_MS } from '@board-app/shared';
 
@@ -15,12 +14,12 @@ interface IdentityContextValue {
   setSession(session: SessionTicket | null): void;
   refreshSession(workerBaseUrl?: string): Promise<SessionTicket | null>;
   linkAccessIdentity(workerBaseUrl?: string): Promise<RegisterIdentityResponse['user'] | null>;
+  recoverIdentity(pseudonym: string, recoveryKey: string, workerBaseUrl?: string): Promise<boolean>;
   logout(workerBaseUrl?: string): Promise<void>;
   hydrated: boolean;
 }
 
 const IdentityContext = createContext<IdentityContextValue | undefined>(undefined);
-const SESSION_COOKIE_NAME = 'boardapp_session_0';
 const DEFAULT_WORKER_BASE_URL = process.env.NEXT_PUBLIC_WORKER_BASE_URL ?? 'http://localhost:8788';
 
 function getStoredIdentity(): RegisterIdentityResponse['user'] | null {
@@ -38,24 +37,6 @@ function getStoredAlias(boardId: string): BoardAlias | null {
   try {
     const raw = window.localStorage.getItem(`boardapp:alias:${boardId}`);
     return raw ? (JSON.parse(raw) as BoardAlias) : null;
-  } catch {
-    return null;
-  }
-}
-
-function getStoredSession(): SessionTicket | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const cookie = getCookie(SESSION_COOKIE_NAME);
-    if (cookie) {
-      return JSON.parse(cookie.toString()) as SessionTicket;
-    }
-  } catch {
-    // ignore malformed cookie
-  }
-  try {
-    const raw = window.localStorage.getItem('boardapp:session');
-    return raw ? (JSON.parse(raw) as SessionTicket) : null;
   } catch {
     return null;
   }
@@ -84,16 +65,14 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+
+    // 1. Load optimistic identity (user profile)
     const storedIdentity = getStoredIdentity();
     if (storedIdentity) {
       setIdentityState(storedIdentity);
     }
 
-    const storedSession = getStoredSession();
-    if (storedSession) {
-      setSessionState(storedSession);
-    }
-
+    // 2. Load aliases
     const entries: Record<string, BoardAlias | null> = {};
     for (let i = 0; i < window.localStorage.length; i += 1) {
       const key = window.localStorage.key(i);
@@ -111,7 +90,37 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     if (Object.keys(entries).length > 0) {
       setAliasMap(entries);
     }
-    setHydrated(true);
+
+    // 3. Verify session with backend (HttpOnly cookie)
+    const verifySession = async () => {
+      try {
+        const res = await fetch(`${DEFAULT_WORKER_BASE_URL}/identity/session`, {
+          method: 'GET',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'include'
+        });
+
+        if (res.ok) {
+          const payload = await res.json() as { user: RegisterIdentityResponse['user']; session: SessionTicket };
+          setIdentityState(payload.user);
+          setSessionState(payload.session);
+        } else {
+          // Session invalid or expired
+          setIdentityState(null);
+          setSessionState(null);
+          window.localStorage.removeItem('boardapp:identity');
+        }
+      } catch (error) {
+        console.warn('[identity] failed to verify session', error);
+        // Keep optimistic identity if network fails? Or clear it? 
+        // Safer to clear if we can't verify, but for offline support we might want to keep it.
+        // For now, let's assume if we can't reach the backend, we might be offline.
+      } finally {
+        setHydrated(true);
+      }
+    };
+
+    verifySession();
   }, []);
 
   useEffect(() => {
@@ -123,26 +132,9 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     }
   }, [identity, hydrated]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (session) {
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem('boardapp:session', JSON.stringify(session));
-      }
-      setCookie(SESSION_COOKIE_NAME, JSON.stringify(session), {
-        maxAge: SESSION_TTL_MS / 1000,
-        sameSite: 'lax',
-        path: '/'
-      });
-    } else {
-      if (typeof window !== 'undefined') {
-        window.localStorage.removeItem('boardapp:session');
-      }
-      deleteCookie(SESSION_COOKIE_NAME, { path: '/' });
-    }
-  }, [session, hydrated]);
+  // Removed session persistence effect (handled by cookies)
 
-  const setIdentity = (user: RegisterIdentityResponse['user'] | null) => {
+  const setIdentity = useCallback((user: RegisterIdentityResponse['user'] | null) => {
     const previousId = identity?.id;
     setIdentityState(user);
     if (!user) {
@@ -156,9 +148,9 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       clearStoredAliases();
       setAliasMap({});
     }
-  };
+  }, [identity?.id]);
 
-  const setAlias = (boardId: string, alias: BoardAlias | null) => {
+  const setAlias = useCallback((boardId: string, alias: BoardAlias | null) => {
     setAliasMap(prev => ({ ...prev, [boardId]: alias }));
     if (typeof window === 'undefined') return;
     if (alias) {
@@ -166,31 +158,31 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
     } else {
       window.localStorage.removeItem(`boardapp:alias:${boardId}`);
     }
-  };
+  }, []);
 
-  const getAlias = (boardId: string): BoardAlias | null => {
+  const getAlias = useCallback((boardId: string): BoardAlias | null => {
     const existing = aliasMap[boardId];
     if (existing) return existing;
     return getStoredAlias(boardId);
-  };
+  }, [aliasMap]);
 
-  const setSession = (ticket: SessionTicket | null) => {
+  const setSession = useCallback((ticket: SessionTicket | null) => {
     setSessionState(ticket);
-  };
+  }, []);
 
   const refreshSession = useCallback(
     async (workerBaseUrl?: string) => {
-      if (!identity || !session?.token) return null;
+      // We don't need the token in the header anymore, cookies handle it
       const base = workerBaseUrl ?? (typeof window !== 'undefined' ? DEFAULT_WORKER_BASE_URL : '');
       if (!base) return null;
       try {
         const res = await fetch(`${base}/identity/session`, {
           method: 'POST',
           headers: {
-            'content-type': 'application/json',
-            Authorization: `Bearer ${session.token}`
+            'content-type': 'application/json'
           },
-          body: JSON.stringify({ userId: identity.id })
+          body: JSON.stringify({ userId: identity?.id }), // userId is optional in backend but good to send
+          credentials: 'include'
         });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok || !payload?.session) {
@@ -205,20 +197,17 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
         return null;
       }
     },
-    [identity, session]
+    [identity?.id]
   );
 
   const linkAccessIdentity = useCallback(
     async (workerBaseUrl?: string) => {
-      if (!session?.token) return null;
       const base = workerBaseUrl ?? (typeof window !== 'undefined' ? DEFAULT_WORKER_BASE_URL : '');
       if (!base) return null;
       try {
         const res = await fetch(`${base}/identity/link`, {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.token}`
-          }
+          credentials: 'include'
         });
         if (res.status === 401 || res.status === 403) {
           setLinkAttempted(true);
@@ -242,7 +231,37 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
         return null;
       }
     },
-    [session?.token]
+    [setIdentity]
+  );
+
+  const recoverIdentity = useCallback(
+    async (pseudonym: string, recoveryKey: string, workerBaseUrl?: string) => {
+      const base = workerBaseUrl ?? (typeof window !== 'undefined' ? DEFAULT_WORKER_BASE_URL : '');
+      if (!base) return false;
+      try {
+        const res = await fetch(`${base}/identity/recover`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ pseudonym, recoveryKey }),
+          credentials: 'include'
+        });
+
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok || !payload?.session) {
+          throw new Error(payload?.error ?? `Failed to recover identity (${res.status})`);
+        }
+
+        const user = payload.user as RegisterIdentityResponse['user'];
+        const session = payload.session as SessionTicket;
+        setIdentity(user);
+        setSession(session);
+        return true;
+      } catch (error) {
+        console.warn('[identity] failed to recover identity', error);
+        return false;
+      }
+    },
+    [setIdentity, setSession]
   );
 
   const logout = useCallback(
@@ -251,11 +270,6 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       try {
         await fetch(`${base}/identity/logout`, {
           method: 'POST',
-          headers: session?.token
-            ? {
-                Authorization: `Bearer ${session.token}`
-              }
-            : undefined,
           credentials: 'include'
         });
       } catch (error) {
@@ -264,19 +278,23 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
       setIdentity(null);
       setSession(null);
       setLinkAttempted(false);
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem('boardapp:identity');
+        // We don't remove session from local storage because we stopped putting it there
+      }
     },
-    [session?.token]
+    [setIdentity]
   );
 
   useEffect(() => {
     if (!identity || !session?.expiresAt) return;
     const msUntilRefresh = session.expiresAt - Date.now() - 60_000;
     if (msUntilRefresh <= 0) {
-      refreshSession().catch(() => {});
+      refreshSession().catch(() => { });
       return;
     }
     const timer = window.setTimeout(() => {
-      refreshSession().catch(() => {});
+      refreshSession().catch(() => { });
     }, msUntilRefresh);
     return () => window.clearTimeout(timer);
   }, [identity?.id, session?.expiresAt, refreshSession]);
@@ -287,14 +305,19 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated || !identity || !session?.token || linkAttempted) return;
+    // We only try to link if we have a session but maybe not the right identity?
+    // Actually, linkAccessIdentity uses the cookie now, so we just check if we are logged in.
+    // But wait, if we are logged in, we have an identity.
+    // This logic was: if we have a session token but maybe we want to upgrade/link to Access?
+    // Let's keep it but ensure it uses credentials.
     linkAccessIdentity()
       .catch(() => null)
       .finally(() => setLinkAttempted(true));
   }, [hydrated, identity?.id, session?.token, linkAttempted, linkAccessIdentity]);
 
   const value = useMemo<IdentityContextValue>(
-    () => ({ identity, aliasMap, setIdentity, setAlias, getAlias, session, setSession, refreshSession, linkAccessIdentity, logout, hydrated }),
-    [identity, aliasMap, session, refreshSession, linkAccessIdentity, logout, hydrated]
+    () => ({ identity, aliasMap, setIdentity, setAlias, getAlias, session, setSession, refreshSession, linkAccessIdentity, recoverIdentity, logout, hydrated }),
+    [identity, aliasMap, setIdentity, setAlias, getAlias, session, setSession, refreshSession, linkAccessIdentity, recoverIdentity, logout, hydrated]
   );
 
   return <IdentityContext.Provider value={value}>{children}</IdentityContext.Provider>;

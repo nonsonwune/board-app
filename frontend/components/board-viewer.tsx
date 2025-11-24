@@ -29,8 +29,10 @@ import PostCard from './feed/post-card';
 import PostDetail from './feed/post-detail';
 import { formatBoardDistance } from '../lib/date';
 import { formatBoardName } from '../lib/board';
-import BoardMap from './board-map';
 import { markBoardJoined } from '../lib/onboarding';
+import dynamic from 'next/dynamic';
+
+const BoardMap = dynamic(() => import('./board-map'), { ssr: false });
 
 const DEFAULT_SPACE_TABS = ['Home', 'Student Life', 'Events', 'Sports'];
 type ReplyState = BoardReply & { pending?: boolean };
@@ -145,7 +147,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         title: 'It’s quiet right now…',
         body: 'Be the first to share a campus update or plan a meetup.'
       },
-        {
+      {
         title: 'Start the conversation',
         body: 'Share a study tip, a lunch meetup, or a quick shout-out to your floor.'
       },
@@ -363,10 +365,10 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       },
       spaces: chromeSpaceTabs.length
         ? {
-            tabs: chromeSpaceTabs,
-            activeTabId: activeSpaceId,
-            onSelect: handleSpaceSelect
-          }
+          tabs: chromeSpaceTabs,
+          activeTabId: activeSpaceId,
+          onSelect: handleSpaceSelect
+        }
         : null
     });
 
@@ -375,11 +377,20 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     };
   }, [friendlyBoardName, boardDistanceLabel, status, statusLabel, chromeConnectionStatus, isPhaseOneBoard, setTopBar, resetTopBar, connectionCount, viewSpaces, activeSpaceId, handleSpaceSelect, addToast, isHeartbeatStale]);
 
+  const openComposerRef = useRef(openComposer);
+  useEffect(() => {
+    openComposerRef.current = openComposer;
+  }, [openComposer]);
+
+  const handleFabPress = useCallback(() => {
+    openComposerRef.current();
+  }, []);
+
   useEffect(() => {
     const canCompose = Boolean(identity && sessionToken);
     setFab({
       label: 'Post',
-      onPress: openComposer,
+      onPress: handleFabPress,
       disabled: !canCompose,
       tooltip: canCompose ? 'Share an update with the board' : 'Register an identity to post',
       visible: true,
@@ -389,7 +400,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     return () => {
       resetFab();
     };
-  }, [identity, sessionToken, status, openComposer, setFab, resetFab]);
+  }, [identity, sessionToken, status, handleFabPress, setFab, resetFab]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -636,7 +647,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       setReplyError(null);
       try {
         const res = await fetch(
-          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(post.id)}/replies`
+          `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts/${encodeURIComponent(post.id)}/replies`,
+          { credentials: 'include' }
         );
         const payload = (await res.json().catch(() => ({}))) as ListRepliesResponse;
         if (!res.ok || !payload?.ok) {
@@ -703,7 +715,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           {
             method: 'POST',
             headers: buildHeaders({ 'content-type': 'application/json' }),
-            body: JSON.stringify({ body: trimmed, userId: identity.id, author: alias?.alias ?? identity.pseudonym })
+            body: JSON.stringify({ body: trimmed, userId: identity.id, author: alias?.alias ?? identity.pseudonym }),
+            credentials: 'include'
           }
         );
         const payload = (await res.json().catch(() => ({}))) as CreateReplyResponse;
@@ -798,7 +811,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           {
             method: 'POST',
             headers: buildHeaders({ 'content-type': 'application/json' }),
-            body: JSON.stringify({ userId, action })
+            body: JSON.stringify({ userId, action }),
+            credentials: 'include'
           }
         );
 
@@ -813,11 +827,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           prev.map(post =>
             post.id === body.postId
               ? {
-                  ...post,
-                  reactionCount: body.reactions.total,
-                  likeCount: body.reactions.likeCount,
-                  dislikeCount: body.reactions.dislikeCount
-                }
+                ...post,
+                reactionCount: body.reactions.total,
+                likeCount: body.reactions.likeCount,
+                dislikeCount: body.reactions.dislikeCount
+              }
               : post
           )
         );
@@ -917,7 +931,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/posts`, {
           method: 'POST',
           headers: buildHeaders({ 'content-type': 'application/json' }),
-          body: JSON.stringify({ body: trimmed, author: resolvedAuthor, userId: identity.id })
+          body: JSON.stringify({ body: trimmed, author: resolvedAuthor, userId: identity.id }),
+          credentials: 'include'
         });
         const payload = await res.json().catch(() => ({}));
         raiseForStatus(res, payload, `Failed to create post (${res.status})`);
@@ -977,7 +992,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         const res = await fetch(`${workerBaseUrl}/identity/register`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ pseudonym: trimmed })
+          body: JSON.stringify({ pseudonym: trimmed }),
+          credentials: 'include'
         });
 
         const payload = await res.json().catch(() => ({}));
@@ -1029,7 +1045,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases`, {
           method: alias ? 'PUT' : 'POST',
           headers: buildHeaders({ 'content-type': 'application/json' }),
-          body: JSON.stringify({ userId: identity.id, alias: trimmed })
+          body: JSON.stringify({ userId: identity.id, alias: trimmed }),
+          credentials: 'include'
         });
 
         const payload = await res.json().catch(() => ({}));
@@ -1174,7 +1191,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         const res = await fetch(
           `${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/aliases?userId=${encodeURIComponent(identityId)}`,
           {
-            headers: buildHeaders()
+            headers: buildHeaders(),
+            credentials: 'include'
           }
         );
         const body: GetAliasResponse = await res.json();
@@ -1294,11 +1312,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       setSelectedPost(current =>
         current && current.id === payload.postId
           ? {
-              ...current,
-              reactionCount: reactions.total,
-              likeCount: reactions.likeCount,
-              dislikeCount: reactions.dislikeCount
-            }
+            ...current,
+            reactionCount: reactions.total,
+            likeCount: reactions.likeCount,
+            dislikeCount: reactions.dislikeCount
+          }
           : current
       );
       setReactionStatus(
@@ -1364,7 +1382,8 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       const res = await fetch(`${workerBaseUrl}/boards/${encodeURIComponent(boardId)}/events`, {
         method: 'POST',
         headers: buildHeaders({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ event: type, data: payload })
+        body: JSON.stringify({ event: type, data: payload }),
+        credentials: 'include'
       });
       const responsePayload = await res.json().catch(() => ({}));
       raiseForStatus(res, responsePayload, `Failed to send event (${res.status})`);
@@ -1496,157 +1515,157 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
         <section className="mt-10">
           {showDevTools && (
             <>
-          <form onSubmit={handleRegisterIdentity} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Register Identity</h2>
-            <p className="mt-2 text-xs text-text-tertiary">
-              Identities map to pseudonyms used across boards. Reactions require a user ID.
-            </p>
-            <div className="mt-4 flex flex-wrap items-end gap-4">
-              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                Pseudonym
-                <input
-                  name="pseudonym"
-                  placeholder="e.g. CampusScout"
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                  required
-                />
-              </label>
-              <button
-                type="submit"
-                disabled={identityLoading}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
-              >
-                {identityLoading ? 'Registering…' : registerLabel}
-              </button>
-            </div>
-            {effectiveIdentity && (
-              <div className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
-                <p>
-                  Active identity:{' '}
-                  <span className="font-semibold text-text-primary">{effectiveIdentity.pseudonym}</span>{' '}
-                  <code className="ml-1 rounded bg-background px-2 py-1 text-[11px] text-text-secondary">{effectiveIdentity.id}</code>
+              <form onSubmit={handleRegisterIdentity} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+                <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Register Identity</h2>
+                <p className="mt-2 text-xs text-text-tertiary">
+                  Identities map to pseudonyms used across boards. Reactions require a user ID.
                 </p>
-                {alias && (
-                  <p className="mt-2 text-[11px] text-text-tertiary">
-                    Board alias: <span className="font-semibold text-text-primary">{alias.alias}</span>
-                  </p>
-                )}
-                <Link
-                  href="/profile"
-                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary transition hover:text-primary"
-                >
-                  Manage identity & sessions →
-                </Link>
-              </div>
-            )}
-            {effectiveIdentity && !sessionToken && (
-              <div className="mt-3 rounded-md border border-primary/30 bg-primary/10 p-3 text-xs text-primary">
-                <p>{accessCopy.forbidden}</p>
-                <Link
-                  href="/profile"
-                  className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary underline-offset-4 hover:text-primary hover:underline"
-                >
-                  Re-link session →
-                </Link>
-              </div>
-            )}
-            {identityError && (
-              <p className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{identityError}</p>
-            )}
-          </form>
-
-          <form
-            onSubmit={handleUpsertAlias}
-            className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md"
-          >
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Set Board Alias</h2>
-            <p className="mt-2 text-xs text-text-tertiary">
-              Aliases display only within this board. They override your global pseudonym.
-            </p>
-            <div className="mt-4 flex flex-wrap items-end gap-4">
-              <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                Alias
-                <input
-                  name="boardAlias"
-                  value={aliasInput}
-                  onChange={event => {
-                    setAliasInput(event.target.value);
-                    setAliasStatus(null);
-                    setAliasError(null);
-                  }}
-                  placeholder="e.g. LibraryLookout"
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                  disabled={!identity}
-                />
-              </label>
-              <button
-                type="submit"
-                disabled={!identity || aliasLoading}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
-              >
-                {!identity ? 'Register identity first' : aliasLoading ? 'Saving…' : alias ? 'Update Alias' : 'Save Alias'}
-              </button>
-            </div>
-            {alias && (
-              <p className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
-                Current alias: <span className="font-semibold text-text-primary">{alias.alias}</span>
-                {alias.aliasNormalized && (
-                  <code className="ml-2 rounded bg-background px-2 py-1 text-[11px] text-text-secondary">{alias.aliasNormalized}</code>
-                )}
-              </p>
-            )}
-            {aliasStatus && (
-              <p className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-primary/80">{aliasStatus}</p>
-            )}
-            {aliasError && (
-              <p className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{aliasError}</p>
-            )}
-          </form>
-
-          <form onSubmit={handleCreatePost} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Create Test Post</h2>
-            <div className="mt-4 flex flex-wrap gap-4">
-              <label className="flex min-w-[140px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                Author (optional)
-                <input
-                  name="postAuthor"
-                  placeholder="Anon"
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                />
-              </label>
-              {sessionToken ? (
-                <>
+                <div className="mt-4 flex flex-wrap items-end gap-4">
                   <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                    Message
+                    Pseudonym
                     <input
-                      name="postBody"
-                      placeholder="Share an update"
+                      name="pseudonym"
+                      placeholder="e.g. CampusScout"
                       className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                       required
                     />
                   </label>
                   <button
                     type="submit"
-                    className="self-end rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark"
+                    disabled={identityLoading}
+                    className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
                   >
-                    Post
+                    {identityLoading ? 'Registering…' : registerLabel}
                   </button>
-                </>
-              ) : (
-                <div className="flex flex-1 items-center justify-between rounded-md border border-dashed border-border bg-surface px-4 py-3 text-xs text-text-secondary">
-                  <span>Session expired. Re-register identity to post.</span>
-                  <Link
-                    href="/profile"
-                    className="rounded-md border border-border px-2 py-1 text-[11px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
-                  >
-                    Manage Session
-                  </Link>
                 </div>
-              )}
-            </div>
-          </form>
+                {effectiveIdentity && (
+                  <div className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
+                    <p>
+                      Active identity:{' '}
+                      <span className="font-semibold text-text-primary">{effectiveIdentity.pseudonym}</span>{' '}
+                      <code className="ml-1 rounded bg-background px-2 py-1 text-[11px] text-text-secondary">{effectiveIdentity.id}</code>
+                    </p>
+                    {alias && (
+                      <p className="mt-2 text-[11px] text-text-tertiary">
+                        Board alias: <span className="font-semibold text-text-primary">{alias.alias}</span>
+                      </p>
+                    )}
+                    <Link
+                      href="/profile"
+                      className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary transition hover:text-primary"
+                    >
+                      Manage identity & sessions →
+                    </Link>
+                  </div>
+                )}
+                {effectiveIdentity && !sessionToken && (
+                  <div className="mt-3 rounded-md border border-primary/30 bg-primary/10 p-3 text-xs text-primary">
+                    <p>{accessCopy.forbidden}</p>
+                    <Link
+                      href="/profile"
+                      className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary underline-offset-4 hover:text-primary hover:underline"
+                    >
+                      Re-link session →
+                    </Link>
+                  </div>
+                )}
+                {identityError && (
+                  <p className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{identityError}</p>
+                )}
+              </form>
 
-          </>
+              <form
+                onSubmit={handleUpsertAlias}
+                className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md"
+              >
+                <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Set Board Alias</h2>
+                <p className="mt-2 text-xs text-text-tertiary">
+                  Aliases display only within this board. They override your global pseudonym.
+                </p>
+                <div className="mt-4 flex flex-wrap items-end gap-4">
+                  <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    Alias
+                    <input
+                      name="boardAlias"
+                      value={aliasInput}
+                      onChange={event => {
+                        setAliasInput(event.target.value);
+                        setAliasStatus(null);
+                        setAliasError(null);
+                      }}
+                      placeholder="e.g. LibraryLookout"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                      disabled={!identity}
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={!identity || aliasLoading}
+                    className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
+                  >
+                    {!identity ? 'Register identity first' : aliasLoading ? 'Saving…' : alias ? 'Update Alias' : 'Save Alias'}
+                  </button>
+                </div>
+                {alias && (
+                  <p className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
+                    Current alias: <span className="font-semibold text-text-primary">{alias.alias}</span>
+                    {alias.aliasNormalized && (
+                      <code className="ml-2 rounded bg-background px-2 py-1 text-[11px] text-text-secondary">{alias.aliasNormalized}</code>
+                    )}
+                  </p>
+                )}
+                {aliasStatus && (
+                  <p className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-primary/80">{aliasStatus}</p>
+                )}
+                {aliasError && (
+                  <p className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{aliasError}</p>
+                )}
+              </form>
+
+              <form onSubmit={handleCreatePost} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+                <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Create Test Post</h2>
+                <div className="mt-4 flex flex-wrap gap-4">
+                  <label className="flex min-w-[140px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    Author (optional)
+                    <input
+                      name="postAuthor"
+                      placeholder="Anon"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                  {sessionToken ? (
+                    <>
+                      <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                        Message
+                        <input
+                          name="postBody"
+                          placeholder="Share an update"
+                          className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                          required
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        className="self-end rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark"
+                      >
+                        Post
+                      </button>
+                    </>
+                  ) : (
+                    <div className="flex flex-1 items-center justify-between rounded-md border border-dashed border-border bg-surface px-4 py-3 text-xs text-text-secondary">
+                      <span>Session expired. Re-register identity to post.</span>
+                      <Link
+                        href="/profile"
+                        className="rounded-md border border-border px-2 py-1 text-[11px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
+                      >
+                        Manage Session
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              </form>
+
+            </>
           )}
 
           <section className="mt-10 space-y-4">
@@ -1736,127 +1755,127 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
 
           {showDevTools && (
             <>
-          <form onSubmit={handleSendReaction} className="mt-8 mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Send Test Reaction</h2>
-            <div className="mt-4 grid gap-4 sm:grid-cols-3">
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                Post
-                <select
-                  name="reactionPostId"
-                  value={reactionPostId}
-                  onChange={event => setReactionPostId(event.target.value)}
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                  disabled={posts.length === 0}
-                >
-                  {posts.map(post => (
-                    <option key={post.id} value={post.id}>
-                      {post.body.slice(0, 40)}
-                      {post.body.length > 40 ? '…' : ''}
-                    </option>
-                  ))}
-                  {posts.length === 0 && <option value="">No posts</option>}
-                </select>
-              </label>
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                User ID
-                <input
-                  name="reactionUserId"
-                  value={reactionUserId}
-                  onChange={event => setReactionUserId(event.target.value)}
-                  placeholder="Copy from identity"
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                  required
-                />
-              </label>
-              <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                Action
-                <select
-                  name="reactionAction"
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                  defaultValue="like"
-                >
-                  <option value="like">Like</option>
-                  <option value="dislike">Dislike</option>
-                  <option value="remove">Remove</option>
-                </select>
-              </label>
-            </div>
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <button
-                type="submit"
-                disabled={reactionLoading || !reactionPostId}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
-              >
-                {reactionLoading ? 'Sending…' : 'Send Reaction'}
-              </button>
-              {reactionStatus && (
-                <p className="text-xs text-text-secondary">{reactionStatus}</p>
-              )}
-            </div>
-          </form>
-
-          <form onSubmit={handleInject} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
-            <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Inject Test Event</h2>
-            <div className="mt-4 flex flex-wrap gap-4">
-              <label className="flex flex-1 min-w-[160px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                Event Type
-                <input
-                  name="eventType"
-                  defaultValue="note"
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                />
-              </label>
-              <label className="flex flex-[2] min-w-[200px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                Message
-                <input
-                  name="payload"
-                  placeholder="Hello from the UI"
-                  className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-                />
-              </label>
-              <button
-                type="submit"
-                className="self-end rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark"
-              >
-                Broadcast
-              </button>
-            </div>
-          </form>
-
-          <h2 className="text-lg font-semibold text-text-primary">Event Stream</h2>
-          <p className="text-xs text-text-tertiary">Newest events at the bottom.</p>
-
-          <div className="mt-4 space-y-4">
-            {sortedEvents.map(event => (
-              <article
-                key={event.id}
-                className="rounded-xl border border-border bg-surface p-4 shadow-md"
-              >
-                <header className="flex flex-wrap items-center justify-between gap-3 text-xs text-text-tertiary">
-                  <span className="font-mono text-primary">{event.traceId}</span>
-                  <time className="font-medium text-text-secondary">
-                    {new Date(event.timestamp).toLocaleTimeString()}
-                  </time>
-                </header>
-                <div className="mt-3">
-                  <span className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-primary">
-                    {event.event}
-                  </span>
+              <form onSubmit={handleSendReaction} className="mt-8 mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+                <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Send Test Reaction</h2>
+                <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                  <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    Post
+                    <select
+                      name="reactionPostId"
+                      value={reactionPostId}
+                      onChange={event => setReactionPostId(event.target.value)}
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                      disabled={posts.length === 0}
+                    >
+                      {posts.map(post => (
+                        <option key={post.id} value={post.id}>
+                          {post.body.slice(0, 40)}
+                          {post.body.length > 40 ? '…' : ''}
+                        </option>
+                      ))}
+                      {posts.length === 0 && <option value="">No posts</option>}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    User ID
+                    <input
+                      name="reactionUserId"
+                      value={reactionUserId}
+                      onChange={event => setReactionUserId(event.target.value)}
+                      placeholder="Copy from identity"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                      required
+                    />
+                  </label>
+                  <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    Action
+                    <select
+                      name="reactionAction"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                      defaultValue="like"
+                    >
+                      <option value="like">Like</option>
+                      <option value="dislike">Dislike</option>
+                      <option value="remove">Remove</option>
+                    </select>
+                  </label>
                 </div>
-                <pre className="mt-3 overflow-x-auto rounded-lg bg-background/70 p-3 text-xs text-text-primary">
-                  {JSON.stringify(event.data, null, 2)}
-                </pre>
-              </article>
-            ))}
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <button
+                    type="submit"
+                    disabled={reactionLoading || !reactionPostId}
+                    className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
+                  >
+                    {reactionLoading ? 'Sending…' : 'Send Reaction'}
+                  </button>
+                  {reactionStatus && (
+                    <p className="text-xs text-text-secondary">{reactionStatus}</p>
+                  )}
+                </div>
+              </form>
 
-            {sortedEvents.length === 0 && (
-              <div className="rounded-xl border border-dashed border-border bg-surface p-8 text-center text-sm text-text-tertiary">
-                Waiting for events… use the smoke test or POST to <code className="bg-surface px-1">/boards/{boardId}/events</code> to
-                simulate activity.
+              <form onSubmit={handleInject} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
+                <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Inject Test Event</h2>
+                <div className="mt-4 flex flex-wrap gap-4">
+                  <label className="flex flex-1 min-w-[160px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    Event Type
+                    <input
+                      name="eventType"
+                      defaultValue="note"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-[2] min-w-[200px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    Message
+                    <input
+                      name="payload"
+                      placeholder="Hello from the UI"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="self-end rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark"
+                  >
+                    Broadcast
+                  </button>
+                </div>
+              </form>
+
+              <h2 className="text-lg font-semibold text-text-primary">Event Stream</h2>
+              <p className="text-xs text-text-tertiary">Newest events at the bottom.</p>
+
+              <div className="mt-4 space-y-4">
+                {sortedEvents.map(event => (
+                  <article
+                    key={event.id}
+                    className="rounded-xl border border-border bg-surface p-4 shadow-md"
+                  >
+                    <header className="flex flex-wrap items-center justify-between gap-3 text-xs text-text-tertiary">
+                      <span className="font-mono text-primary">{event.traceId}</span>
+                      <time className="font-medium text-text-secondary">
+                        {new Date(event.timestamp).toLocaleTimeString()}
+                      </time>
+                    </header>
+                    <div className="mt-3">
+                      <span className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-primary">
+                        {event.event}
+                      </span>
+                    </div>
+                    <pre className="mt-3 overflow-x-auto rounded-lg bg-background/70 p-3 text-xs text-text-primary">
+                      {JSON.stringify(event.data, null, 2)}
+                    </pre>
+                  </article>
+                ))}
+
+                {sortedEvents.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-border bg-surface p-8 text-center text-sm text-text-tertiary">
+                    Waiting for events… use the smoke test or POST to <code className="bg-surface px-1">/boards/{boardId}/events</code> to
+                    simulate activity.
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-          </>
+            </>
           )}
         </section>
       </div>
@@ -2106,9 +2125,9 @@ function IdentityOnboardingModal({
               <button
                 type="submit"
                 disabled=
-                  {mode === 'register'
-                    ? loading || (!pseudonym.trim() && touched)
-                    : aliasLoading || (mode === 'alias' && touched && !aliasValue.trim())}
+                {mode === 'register'
+                  ? loading || (!pseudonym.trim() && touched)
+                  : aliasLoading || (mode === 'alias' && touched && !aliasValue.trim())}
                 className="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
               >
                 {loading || aliasLoading ? 'Saving…' : mode === 'alias' ? 'Save alias' : 'Continue'}

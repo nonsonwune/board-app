@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../types';
 import { logger } from '../lib/logger';
 import { RegisterIdentitySchema } from '@board-app/shared';
-import type { RegisterIdentityResponse, CreateSessionRequest, CreateSessionResponse } from '@board-app/shared';
+import type { RegisterIdentityResponse, CreateSessionRequest, CreateSessionResponse, UserProfile } from '@board-app/shared';
 import { normalizeHandle, isUniqueConstraintError, parseCookies } from '../utils';
 import { verifyAccessJwt } from '../lib/jwt';
 import {
@@ -16,7 +16,9 @@ import {
     ensureAccessPrincipalForUser,
     getUserById,
     userRecordToProfile,
-    resolveAccessUser
+    resolveAccessUser,
+    getUserByPseudonym,
+    verifyRecoveryKey
 } from '../lib/user';
 
 const SESSION_COOKIE_NAME = 'boardapp_session_0';
@@ -33,6 +35,15 @@ function getSessionTokenFromRequest(request: Request): string | null {
     const cookies = parseCookies(request.headers.get('Cookie'));
     const cookieToken = cookies[SESSION_COOKIE_NAME];
     return cookieToken ? cookieToken : null;
+}
+
+function createSessionCookie(token: string, expiresAt: number): string {
+    const maxAge = Math.floor((expiresAt - Date.now()) / 1000);
+    return `${SESSION_COOKIE_NAME}=${token}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function createExpiredSessionCookie(): string {
+    return `${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`;
 }
 
 const auth = new Hono<{ Bindings: Env }>();
@@ -66,18 +77,49 @@ auth.post('/register', async (c) => {
         const user = await createUser(env, pseudonym, normalized);
         await ensureAccessPrincipalForUser(env, accessPrincipal, user.id, { allowReassign: true });
         const session = await issueSessionTicket(env, user.id);
-        const responseBody: RegisterIdentityResponse = {
+        const responseBody: RegisterIdentityResponse & { recoveryKey?: string } = {
             ok: true,
             user,
-            session
+            session,
+            recoveryKey: user.recoveryKey
         };
-        return c.json(responseBody, 201);
+        return new Response(JSON.stringify(responseBody), {
+            status: 201,
+            headers: {
+                'Content-Type': 'application/json',
+                'Set-Cookie': createSessionCookie(session.token, session.expiresAt)
+            }
+        });
     } catch (error) {
         if (isUniqueConstraintError(error)) {
             return c.json({ error: 'pseudonym already taken' }, 409);
         }
         logger.error('[identity] Failed to register user', error, { endpoint: '/identity/register' });
         return c.json({ error: 'internal' }, 500);
+    }
+});
+
+// GET /identity/session
+auth.get('/session', async (c) => {
+    const env = c.env;
+    const request = c.req.raw;
+
+    try {
+        const session = await getSessionFromRequest(request, env);
+        const user = await getUserById(env, session.user_id);
+        if (!user) {
+            return c.json({ error: 'user not found' }, 404);
+        }
+
+        const responseBody: { ok: boolean; user: UserProfile; session: typeof session } = {
+            ok: true,
+            user: userRecordToProfile(user),
+            session
+        };
+        return c.json(responseBody, 200);
+    } catch {
+        // If session is invalid/missing, return 401 so frontend knows to clear state
+        return c.json({ error: 'unauthorized' }, 401);
     }
 });
 
@@ -107,7 +149,13 @@ auth.post('/session', async (c) => {
             user: userRecordToProfile(accessUser)
         };
 
-        return c.json(responseBody, 201);
+        return new Response(JSON.stringify(responseBody), {
+            status: 201,
+            headers: {
+                'Content-Type': 'application/json',
+                'Set-Cookie': createSessionCookie(session.token, session.expiresAt)
+            }
+        });
     }
 
     await ensureSession(request, env, userId);
@@ -118,7 +166,13 @@ auth.post('/session', async (c) => {
         session
     };
 
-    return c.json(responseBody, 201);
+    return new Response(JSON.stringify(responseBody), {
+        status: 201,
+        headers: {
+            'Content-Type': 'application/json',
+            'Set-Cookie': createSessionCookie(session.token, session.expiresAt)
+        }
+    });
 });
 
 // POST /identity/link
@@ -140,6 +194,51 @@ auth.post('/link', async (c) => {
     return c.json(responseBody, 200);
 });
 
+// POST /identity/recover
+auth.post('/recover', async (c) => {
+    const env = c.env;
+    const request = c.req.raw;
+
+    let payload: unknown;
+    try {
+        payload = await request.json();
+    } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400);
+    }
+
+    const { pseudonym, recoveryKey } = payload as { pseudonym?: string; recoveryKey?: string };
+
+    if (!pseudonym || !recoveryKey) {
+        return c.json({ error: 'Pseudonym and Recovery Key are required' }, 400);
+    }
+
+    const user = await getUserByPseudonym(env, pseudonym.trim());
+    if (!user) {
+        // Return generic error to avoid enumeration
+        return c.json({ error: 'Invalid identity or recovery key' }, 401);
+    }
+
+    const isValid = await verifyRecoveryKey(env, user.id, recoveryKey.trim());
+    if (!isValid) {
+        return c.json({ error: 'Invalid identity or recovery key' }, 401);
+    }
+
+    const session = await issueSessionTicket(env, user.id);
+    const responseBody: CreateSessionResponse = {
+        ok: true,
+        session,
+        user: userRecordToProfile(user)
+    };
+
+    return new Response(JSON.stringify(responseBody), {
+        status: 201,
+        headers: {
+            'Content-Type': 'application/json',
+            'Set-Cookie': createSessionCookie(session.token, session.expiresAt)
+        }
+    });
+});
+
 // POST /identity/logout
 auth.post('/logout', async (c) => {
     const env = c.env;
@@ -151,7 +250,7 @@ auth.post('/logout', async (c) => {
             status: 200,
             headers: {
                 'Content-Type': 'application/json',
-                'Set-Cookie': `${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax`
+                'Set-Cookie': createExpiredSessionCookie()
             }
         });
     }
@@ -162,7 +261,7 @@ auth.post('/logout', async (c) => {
         status: 200,
         headers: {
             'Content-Type': 'application/json',
-            'Set-Cookie': `${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax`
+            'Set-Cookie': createExpiredSessionCookie()
         }
     });
 });

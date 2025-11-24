@@ -17,7 +17,7 @@ describe('User Management', () => {
                             // Mock INSERT INTO users
                             if (sql.includes('INSERT INTO users')) {
                                 const [id, pseudonym, normalized, createdAt, status] = params;
-                                mockUsers.set(id, {
+                                mockUsers.set(id as string, {
                                     id,
                                     pseudonym,
                                     pseudonym_normalized: normalized,
@@ -32,7 +32,7 @@ describe('User Management', () => {
                             // Mock SELECT user by ID
                             if (sql.includes('SELECT id, pseudonym')) {
                                 const [userId] = params;
-                                return mockUsers.get(userId) || null;
+                                return mockUsers.get(userId as string) || null;
                             }
                             return null;
                         }
@@ -60,15 +60,15 @@ describe('User Management', () => {
             const user = await createUser(env, 'User', 'user');
 
             // Verify the user was stored with active status
-            const stored = mockUsers.get(user.id);
-            expect(stored.status).toBe('active');
+            const stored = mockUsers.get(user.id) as { status: string } | undefined;
+            expect(stored?.status).toBe('active');
         });
 
         it('should accept custom status', async () => {
             const user = await createUser(env, 'AutoUser', 'autouser', 'access_auto');
 
-            const stored = mockUsers.get(user.id);
-            expect(stored.status).toBe('access_auto');
+            const stored = mockUsers.get(user.id) as { status: string } | undefined;
+            expect(stored?.status).toBe('access_auto');
         });
     });
 

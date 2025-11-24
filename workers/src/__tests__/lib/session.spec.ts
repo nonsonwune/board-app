@@ -21,13 +21,13 @@ describe('Session Management', () => {
                             // Mock INSERT INTO sessions
                             if (sql.includes('INSERT INTO sessions')) {
                                 const [token, userId, createdAt, expiresAt] = params;
-                                mockSessions.set(token, { token, user_id: userId, created_at: createdAt, expires_at: expiresAt });
+                                mockSessions.set(token as string, { token, user_id: userId, created_at: createdAt, expires_at: expiresAt });
                                 return { success: true, meta: {} };
                             }
                             // Mock DELETE FROM sessions
                             if (sql.includes('DELETE FROM sessions')) {
                                 const [token] = params;
-                                mockSessions.delete(token);
+                                mockSessions.delete(token as string);
                                 return { success: true, meta: {} };
                             }
                             return { success: true, meta: {} };
@@ -36,7 +36,7 @@ describe('Session Management', () => {
                             // Mock SELECT session
                             if (sql.includes('SELECT token, user_id')) {
                                 const [token] = params;
-                                return mockSessions.get(token) || null;
+                                return mockSessions.get(token as string) || null;
                             }
                             return null;
                         }

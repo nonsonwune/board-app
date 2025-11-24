@@ -29,11 +29,16 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
     setSession,
     refreshSession,
     linkAccessIdentity,
+    recoverIdentity,
     hydrated,
     logout
   } = useIdentityContext();
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [registerLoading, setRegisterLoading] = useState(false);
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'create' | 'recover'>('create');
+  const [recoverError, setRecoverError] = useState<string | null>(null);
+  const [recoverLoading, setRecoverLoading] = useState(false);
   const [aliasBoardId, setAliasBoardId] = useState('');
   const [aliasValue, setAliasValue] = useState('');
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
@@ -159,13 +164,43 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
       return;
     }
 
-    const body = payload as RegisterIdentityResponse;
+    const body = payload as RegisterIdentityResponse & { recoveryKey?: string };
     setIdentity(body.user);
     setSession(body.session as SessionTicket);
     setRegisterError(null);
+    if (body.recoveryKey) {
+      setRecoveryKey(body.recoveryKey);
+    }
     form.reset();
     addToast({ title: 'Identity registered', description: `Hello, ${body.user.pseudonym}!` });
     setRegisterLoading(false);
+  }
+
+  async function handleRecover(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const pseudonym = (formData.get('pseudonym') as string)?.trim();
+    const key = (formData.get('recoveryKey') as string)?.trim();
+
+    if (!pseudonym || !key) {
+      setRecoverError('Pseudonym and Recovery Key are required.');
+      return;
+    }
+
+    setRecoverError(null);
+    setRecoverLoading(true);
+
+    const success = await recoverIdentity(pseudonym, key, workerBaseUrl);
+
+    if (success) {
+      setRecoverError(null);
+      form.reset();
+      addToast({ title: 'Identity recovered', description: `Welcome back, ${pseudonym}!` });
+    } else {
+      setRecoverError('Invalid identity or recovery key.');
+    }
+    setRecoverLoading(false);
   }
 
   async function handleRefreshSession() {
@@ -346,79 +381,183 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   return (
     <div className="space-y-10">
       <section id="identity" className="rounded-xl border border-border bg-surface p-6">
-        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Identity</h2>
-        {allowRegister ? (
-          <form onSubmit={handleRegister} className="mt-4 flex flex-wrap items-end gap-4">
-            <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-              Pseudonym
-              <input
-                name="pseudonym"
-                placeholder="e.g. StudioScout"
-                defaultValue={identity?.pseudonym ?? ''}
-                className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
-              />
-            </label>
-            <button
-              type="submit"
-              disabled={registerLoading}
-              className="rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
-            >
-              {registerLoading ? 'Registering…' : registerLabel}
-            </button>
-          </form>
+        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Identity Management</h2>
+
+        {!hasActiveIdentity ? (
+          <div className="mt-4 space-y-6">
+            <div className="flex gap-4 border-b border-border">
+              <button
+                type="button"
+                onClick={() => setActiveTab('create')}
+                className={`pb-2 text-xs font-semibold uppercase tracking-[2px] transition ${activeTab === 'create' ? 'border-b-2 border-primary text-primary' : 'text-text-tertiary hover:text-text-secondary'
+                  }`}
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('recover')}
+                className={`pb-2 text-xs font-semibold uppercase tracking-[2px] transition ${activeTab === 'recover' ? 'border-b-2 border-primary text-primary' : 'text-text-tertiary hover:text-text-secondary'
+                  }`}
+              >
+                Recover
+              </button>
+            </div>
+
+            {activeTab === 'create' ? (
+              <div>
+                <h3 className="text-sm font-medium text-text-primary">Create New Identity</h3>
+                <p className="mt-1 text-xs text-text-secondary">
+                  Start fresh with a new pseudonym. This will create a new session on this device.
+                </p>
+                <form onSubmit={handleRegister} className="mt-3 flex flex-wrap items-end gap-4">
+                  <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                    Pseudonym
+                    <input
+                      name="pseudonym"
+                      placeholder="e.g. StudioScout"
+                      defaultValue={identity?.pseudonym ?? ''}
+                      className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={registerLoading}
+                    className="rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
+                  >
+                    {registerLoading ? 'Creating…' : 'Create Identity'}
+                  </button>
+                </form>
+                {registerError && (
+                  <p className="mt-3 rounded-lg border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{registerError}</p>
+                )}
+              </div>
+            ) : (
+              <div>
+                <h3 className="text-sm font-medium text-text-primary">Recover Identity</h3>
+                <p className="mt-1 text-xs text-text-secondary">
+                  Enter your pseudonym and recovery key to sign back in.
+                </p>
+                <form onSubmit={handleRecover} className="mt-3 space-y-4">
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                      Pseudonym
+                      <input
+                        name="pseudonym"
+                        placeholder="e.g. StudioScout"
+                        className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                      />
+                    </label>
+                    <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
+                      Recovery Key
+                      <input
+                        name="recoveryKey"
+                        placeholder="xxxx-xxxx-xxxx-xxxx"
+                        className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={recoverLoading}
+                    className="rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
+                  >
+                    {recoverLoading ? 'Recovering…' : 'Recover Identity'}
+                  </button>
+                </form>
+                {recoverError && (
+                  <p className="mt-3 rounded-lg border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{recoverError}</p>
+                )}
+              </div>
+            )}
+
+            <div className="border-t border-border pt-4">
+              <h3 className="text-sm font-medium text-text-primary">Cloudflare Access</h3>
+              <p className="mt-1 text-xs text-text-secondary">
+                If you are using Cloudflare Access, you can link your existing identity to this session.
+              </p>
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={handleLinkAccess}
+                  disabled={linkingAccess}
+                  className="rounded-full border border-border px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {linkingAccess ? 'Linking…' : 'Link Access Identity'}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : (
-          <p className="mt-4 text-sm text-text-secondary">
-            You are already signed in. Use the controls below to manage your session or sign out before registering a new identity.
-          </p>
-        )}
-        {registerError && (
-          <p className="mt-3 rounded-lg border border-primary/40 bg-primary/10 p-3 text-xs text-primary">{registerError}</p>
-        )}
-        {displayIdentity && (
-          <div className="mt-4 space-y-3 rounded-lg border border-border bg-background p-4 text-sm text-text-secondary">
-            <p>
-              Current identity: <span className="font-semibold text-text-primary">{displayIdentity.pseudonym}</span>{' '}
-              <code className="ml-2 rounded bg-surface px-2 py-1 text-[11px] text-text-tertiary">{displayIdentity.id}</code>
+          <div className="mt-4">
+            <p className="text-sm text-text-secondary">
+              You are currently signed in.
             </p>
-            <div className="flex flex-wrap items-center gap-3 text-[11px] uppercase tracking-[2px] text-text-secondary">
-              {displaySession ? (
-                <span>Session expires {new Date(displaySession.expiresAt).toLocaleString()}</span>
-              ) : (
-                <span>No active session detected</span>
-              )}
+            {displayIdentity && (
+              <div className="mt-4 space-y-3 rounded-lg border border-border bg-background p-4 text-sm text-text-secondary">
+                <div className="flex items-center justify-between">
+                  <p>
+                    Current identity: <span className="font-semibold text-text-primary">{displayIdentity.pseudonym}</span>{' '}
+                    <code className="ml-2 rounded bg-surface px-2 py-1 text-[11px] text-text-tertiary">{displayIdentity.id}</code>
+                  </p>
+                  <span className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-green-600">
+                    <span className="h-2 w-2 rounded-full bg-green-500"></span>
+                    Active Session
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 text-[11px] uppercase tracking-[2px] text-text-secondary pt-2 border-t border-border/50">
+                  {displaySession ? (
+                    <span>Expires {new Date(displaySession.expiresAt).toLocaleString()}</span>
+                  ) : (
+                    <span>No active session detected</span>
+                  )}
+                  <div className="flex-1"></div>
+                  <button
+                    type="button"
+                    onClick={handleRefreshSession}
+                    disabled={refreshingSession || !session?.token} // Actually session.token is not available in context if we removed it from state? Wait, we kept session state, just not in localStorage.
+                    className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {refreshingSession ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => logout(workerBaseUrl)}
+                    className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary"
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {recoveryKey && (
+          <div className="mt-4 rounded-lg border border-green-500/40 bg-green-500/10 p-4">
+            <h3 className="text-sm font-bold text-green-600 uppercase tracking-wider">Save This Key!</h3>
+            <p className="mt-1 text-xs text-text-secondary">
+              This is your only way to recover your account if you log out. We do not store it.
+            </p>
+            <div className="mt-3 flex items-center gap-2">
+              <code className="flex-1 rounded bg-surface px-3 py-2 font-mono text-sm text-text-primary select-all">
+                {recoveryKey}
+              </code>
               <button
                 type="button"
-                onClick={handleRefreshSession}
-                disabled={refreshingSession || !session?.token}
-                className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => {
+                  navigator.clipboard.writeText(recoveryKey);
+                  addToast({ title: 'Copied', description: 'Recovery key copied to clipboard' });
+                }}
+                className="rounded-md border border-border bg-background px-3 py-2 text-xs font-semibold uppercase tracking-wider text-text-secondary hover:text-primary"
               >
-                {refreshingSession ? 'Refreshing…' : 'Refresh Session'}
-              </button>
-              <button
-                type="button"
-                onClick={handleLinkAccess}
-                disabled={linkingAccess}
-                className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {linkingAccess ? 'Linking…' : 'Link Access Identity'}
-              </button>
-              <button
-                type="button"
-                onClick={() => logout(workerBaseUrl)}
-                className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary"
-              >
-                Sign Out
-              </button>
-              <button
-                type="button"
-                onClick={() => setSession(null)}
-                className="rounded-full border border-primary px-3 py-1 text-primary transition hover:bg-primary hover:text-text-inverse"
-              >
-                Clear Session
+                Copy
               </button>
             </div>
           </div>
         )}
+        {/* Removed duplicate registerError display since it is inside the tab now */}
         {sessionStatus && (
           <p className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-text-secondary">{sessionStatus}</p>
         )}
