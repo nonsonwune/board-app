@@ -16,8 +16,9 @@
     "ci": "pnpm --filter @board-app/workers test -- --run && pnpm --filter @board-app/frontend test:e2e"
   },
   "devDependencies": {
+    "@board-app/shared": "workspace:*",
     "tsx": "^4.7.1",
-    "ws": "^8.18.0",
-    "@board-app/shared": "workspace:*"
+    "wrangler": "^4.44.0",
+    "ws": "^8.18.0"
   }
 }

@@ -11,6 +11,24 @@ var __export = /* @__PURE__ */ __name((target, all) => {
   for (var name in all)
     __defProp2(target, name, { get: all[name], enumerable: true });
 }, "__export");
+var ApiError;
+var init_types = __esm({
+  "src/types.ts"() {
+    "use strict";
+    ApiError = class extends Error {
+      static {
+        __name(this, "ApiError");
+      }
+      status;
+      body;
+      constructor(status, body) {
+        super(typeof body.error === "string" ? body.error : "error");
+        this.status = status;
+        this.body = body;
+      }
+    };
+  }
+});
 var Logger;
 var logger;
 var init_logger = __esm({
@@ -85,24 +103,6 @@ __name(parseBearerToken, "parseBearerToken");
 var init_utils = __esm({
   "src/utils.ts"() {
     "use strict";
-  }
-});
-var ApiError;
-var init_types = __esm({
-  "src/types.ts"() {
-    "use strict";
-    ApiError = class extends Error {
-      static {
-        __name(this, "ApiError");
-      }
-      status;
-      body;
-      constructor(status, body) {
-        super(typeof body.error === "string" ? body.error : "error");
-        this.status = status;
-        this.body = body;
-      }
-    };
   }
 });
 var user_exports = {};
@@ -2057,6 +2057,7 @@ var cors = /* @__PURE__ */ __name((options) => {
     }
   }, "cors2");
 }, "cors");
+init_types();
 init_logger();
 var SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1e3;
 function getAdaptiveRadius(state, inputs, config2) {
@@ -15278,17 +15279,25 @@ auth.post("/session", async (c) => {
 auth.post("/link", async (c) => {
   const env = c.env;
   const request = c.req.raw;
-  const session = await getSessionFromRequest(request, env);
-  const principal = await verifyAccessJwt(request, env);
-  if (principal?.subject) {
-    await ensureAccessPrincipalForUser(env, principal, session.user_id, { allowReassign: true });
+  try {
+    const session = await getSessionFromRequest(request, env);
+    const principal = await verifyAccessJwt(request, env);
+    if (principal?.subject) {
+      await ensureAccessPrincipalForUser(env, principal, session.user_id, { allowReassign: true });
+    }
+    const user = await getUserById(env, session.user_id);
+    const responseBody = {
+      ok: true,
+      user: user ? userRecordToProfile(user) : void 0
+    };
+    return c.json(responseBody, 200);
+  } catch (error46) {
+    if (error46 instanceof ApiError && error46.status === 401) {
+      return c.json({ error: "session required" }, 401);
+    }
+    logger.error("[identity] Failed to link access identity", error46, { endpoint: "/identity/link" });
+    return c.json({ error: "internal" }, 500);
   }
-  const user = await getUserById(env, session.user_id);
-  const responseBody = {
-    ok: true,
-    user: user ? userRecordToProfile(user) : void 0
-  };
-  return c.json(responseBody, 200);
 });
 auth.post("/recover", async (c) => {
   const env = c.env;
@@ -16446,6 +16455,34 @@ app.put("/:boardId/aliases", async (c) => {
     return c.json({ error: "internal" }, 500);
   }
 });
+app.get("/:boardId/events", async (c) => {
+  const boardId = decodeURIComponent(c.req.param("boardId"));
+  const limitParam = Number(c.req.query("limit") ?? "50");
+  const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 50;
+  const rows = await c.env.BOARD_DB.prepare(
+    `SELECT id, event_type, payload, trace_id, created_at
+         FROM board_events
+         WHERE board_id = ?1
+         ORDER BY created_at DESC
+         LIMIT ?2`
+  ).bind(boardId, limit).all();
+  const events = (rows.results ?? []).map((row) => {
+    let data;
+    try {
+      data = JSON.parse(row.payload);
+    } catch {
+      data = row.payload;
+    }
+    return {
+      id: row.id,
+      event: row.event_type,
+      data,
+      traceId: row.trace_id,
+      timestamp: row.created_at
+    };
+  });
+  return c.json({ events });
+});
 app.post("/:boardId/events", async (c) => {
   const boardId = decodeURIComponent(c.req.param("boardId"));
   const traceId = c.req.header("cf-ray") ?? crypto.randomUUID();
@@ -17383,7 +17420,7 @@ var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "jsonError");
 var middleware_miniflare3_json_error_default = jsonError;
 
-// .wrangler/tmp/bundle-U65212/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-Lb1xIr/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default,
   middleware_miniflare3_json_error_default
@@ -17415,7 +17452,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-U65212/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-Lb1xIr/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

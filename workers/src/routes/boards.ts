@@ -206,6 +206,41 @@ app.put('/:boardId/aliases', async (c) => {
     }
 });
 
+// GET /:boardId/events
+app.get('/:boardId/events', async (c) => {
+    const boardId = decodeURIComponent(c.req.param('boardId'));
+    const limitParam = Number(c.req.query('limit') ?? '50');
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 50;
+
+    const rows = await c.env.BOARD_DB.prepare(
+        `SELECT id, event_type, payload, trace_id, created_at
+         FROM board_events
+         WHERE board_id = ?1
+         ORDER BY created_at DESC
+         LIMIT ?2`
+    )
+        .bind(boardId, limit)
+        .all<{ id: string; event_type: string; payload: string; trace_id: string; created_at: number }>();
+
+    const events = (rows.results ?? []).map(row => {
+        let data: unknown;
+        try {
+            data = JSON.parse(row.payload);
+        } catch {
+            data = row.payload;
+        }
+        return {
+            id: row.id,
+            event: row.event_type,
+            data,
+            traceId: row.trace_id,
+            timestamp: row.created_at
+        };
+    });
+
+    return c.json({ events });
+});
+
 // GET /:boardId/events (Broadcast via POST in original, but logic was weird. Original code: if (request.method === 'POST') ...
 // Wait, original code had `handleEvents` which handled POST.
 // The URL pattern was `/boards/:boardId/events`.

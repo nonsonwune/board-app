@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
+import { ApiError } from '../types';
 import { logger } from '../lib/logger';
 import { RegisterIdentitySchema } from '@board-app/shared';
 import type { RegisterIdentityResponse, CreateSessionRequest, CreateSessionResponse, UserProfile } from '@board-app/shared';
@@ -180,18 +181,29 @@ auth.post('/link', async (c) => {
     const env = c.env;
     const request = c.req.raw;
 
-    const session = await getSessionFromRequest(request, env);
-    const principal = await verifyAccessJwt(request, env);
-    if (principal?.subject) {
-        await ensureAccessPrincipalForUser(env, principal, session.user_id, { allowReassign: true });
-    }
-    const user = await getUserById(env, session.user_id);
-    const responseBody = {
-        ok: true,
-        user: user ? userRecordToProfile(user) : undefined
-    };
+    try {
+        const session = await getSessionFromRequest(request, env);
+        const principal = await verifyAccessJwt(request, env);
+        if (principal?.subject) {
+            await ensureAccessPrincipalForUser(env, principal, session.user_id, { allowReassign: true });
+        }
+        const user = await getUserById(env, session.user_id);
+        const responseBody = {
+            ok: true,
+            user: user ? userRecordToProfile(user) : undefined
+        };
 
-    return c.json(responseBody, 200);
+        return c.json(responseBody, 200);
+    } catch (error) {
+        // If there's no session, we can't link an identity
+        // Return 401 so the frontend knows this operation requires authentication
+        if (error instanceof ApiError && error.status === 401) {
+            return c.json({ error: 'session required' }, 401);
+        }
+        // For other errors, log and return 500
+        logger.error('[identity] Failed to link access identity', error, { endpoint: '/identity/link' });
+        return c.json({ error: 'internal' }, 500);
+    }
 });
 
 // POST /identity/recover
