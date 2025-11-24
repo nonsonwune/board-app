@@ -398,7 +398,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
   return (
     <div className="space-y-10">
       <section id="identity" className="rounded-xl border border-border bg-surface p-6">
-        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Identity Management</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Profile Settings</h2>
 
         {!hasActiveIdentity ? (
           <div className="mt-4 space-y-6">
@@ -423,18 +423,19 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
 
             {activeTab === 'create' ? (
               <div>
-                <h3 className="text-sm font-medium text-text-primary">Create New Identity</h3>
+                <h3 className="text-sm font-medium text-text-primary">Create Your Campus Profile</h3>
                 <p className="mt-1 text-xs text-text-secondary">
-                  Start fresh with a new pseudonym. This will create a new session on this device.
+                  Choose a username that represents you. This stays with you across all boards.
                 </p>
                 <form onSubmit={handleRegister} className="mt-3 flex flex-wrap items-end gap-4">
                   <label className="flex min-w-[220px] flex-1 flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                    Pseudonym
+                    Username
                     <input
                       name="pseudonym"
-                      placeholder="e.g. StudioScout"
+                      placeholder="e.g. CampusExplorer"
                       defaultValue={identity?.pseudonym ?? ''}
                       className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                      autoFocus
                     />
                   </label>
                   <button
@@ -442,7 +443,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                     disabled={registerLoading}
                     className="rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
                   >
-                    {registerLoading ? 'Creating…' : 'Create Identity'}
+                    {registerLoading ? 'Creating…' : 'Create My Profile'}
                   </button>
                 </form>
                 {registerError && (
@@ -451,17 +452,17 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
               </div>
             ) : (
               <div>
-                <h3 className="text-sm font-medium text-text-primary">Recover Identity</h3>
+                <h3 className="text-sm font-medium text-text-primary">Recover Your Profile</h3>
                 <p className="mt-1 text-xs text-text-secondary">
-                  Enter your pseudonym and recovery key to sign back in.
+                  Have an account already? Enter your username and recovery key to sign back in.
                 </p>
                 <form onSubmit={handleRecover} className="mt-3 space-y-4">
                   <div className="flex flex-wrap gap-4">
                     <label className="flex min-w-[200px] flex-1 flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                      Pseudonym
+                      Username
                       <input
                         name="pseudonym"
-                        placeholder="e.g. StudioScout"
+                        placeholder="e.g. CampusExplorer"
                         className="rounded-md border border-border bg-background px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
                       />
                     </label>
@@ -479,7 +480,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                     disabled={recoverLoading}
                     className="rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
                   >
-                    {recoverLoading ? 'Recovering…' : 'Recover Identity'}
+                    {recoverLoading ? 'Signing In…' : 'Sign Back In'}
                   </button>
                 </form>
                 {recoverError && (
@@ -514,7 +515,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
               <div className="mt-4 space-y-3 rounded-lg border border-border bg-background p-4 text-sm text-text-secondary">
                 <div className="flex items-center justify-between">
                   <p>
-                    Current identity: <span className="font-semibold text-text-primary">{displayIdentity.pseudonym}</span>{' '}
+                    Current profile: <span className="font-semibold text-text-primary">{displayIdentity.pseudonym}</span>{' '}
                     <code className="ml-2 rounded bg-surface px-2 py-1 text-[11px] text-text-tertiary">{displayIdentity.id}</code>
                   </p>
                   <span className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-green-600">
@@ -549,42 +550,49 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
               </div>
             )}
           </div>
-        )}
+        )
+        }
 
-        {recoveryKey && (
-          <div className="mt-4 rounded-lg border border-green-500/40 bg-green-500/10 p-4">
-            <h3 className="text-sm font-bold text-green-600 uppercase tracking-wider">Save This Key!</h3>
-            <p className="mt-1 text-xs text-text-secondary">
-              This is your only way to recover your account if you log out. We do not store it.
-            </p>
-            <div className="mt-3 flex items-center gap-2">
-              <code className="flex-1 rounded bg-surface px-3 py-2 font-mono text-sm text-text-primary select-all">
-                {recoveryKey}
-              </code>
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard.writeText(recoveryKey);
-                  addToast({ title: 'Copied', description: 'Recovery key copied to clipboard' });
-                }}
-                className="rounded-md border border-border bg-background px-3 py-2 text-xs font-semibold uppercase tracking-wider text-text-secondary hover:text-primary"
-              >
-                Copy
-              </button>
+        {
+          recoveryKey && (
+            <div className="mt-4 rounded-lg border border-green-500/40 bg-green-500/10 p-4">
+              <h3 className="text-sm font-bold text-green-600 uppercase tracking-wider">Save This Key!</h3>
+              <p className="mt-1 text-xs text-text-secondary">
+                This is your only way to recover your account if you log out. We do not store it.
+              </p>
+              <div className="mt-3 flex items-center gap-2">
+                <code className="flex-1 rounded bg-surface px-3 py-2 font-mono text-sm text-text-primary select-all">
+                  {recoveryKey}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(recoveryKey);
+                    addToast({ title: 'Copied', description: 'Recovery key copied to clipboard' });
+                  }}
+                  className="rounded-md border border-border bg-background px-3 py-2 text-xs font-semibold uppercase tracking-wider text-text-secondary hover:text-primary"
+                >
+                  Copy
+                </button>
+              </div>
             </div>
-          </div>
-        )}
+          )
+        }
         {/* Removed duplicate registerError display since it is inside the tab now */}
-        {sessionStatus && (
-          <p className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-text-secondary">{sessionStatus}</p>
-        )}
-        {linkStatus && (
-          <p className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-text-secondary">{linkStatus}</p>
-        )}
-      </section>
+        {
+          sessionStatus && (
+            <p className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-text-secondary">{sessionStatus}</p>
+          )
+        }
+        {
+          linkStatus && (
+            <p className="mt-3 rounded-lg border border-border bg-background p-3 text-xs text-text-secondary">{linkStatus}</p>
+          )
+        }
+      </section >
 
       <section id="aliases" className="rounded-xl border border-border bg-surface p-6">
-        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Board Alias</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Board Nicknames (Optional)</h2>
         <form onSubmit={handleAliasSubmit} className="mt-4 grid gap-4 sm:grid-cols-3">
           <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
             Board ID
@@ -601,7 +609,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
             />
           </label>
           <label className="flex flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-            Alias
+            Nickname
             <input
               value={aliasValue}
               onChange={event => {
@@ -618,7 +626,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
             disabled={!identity || aliasLoading}
             className="self-end rounded-full bg-primary px-5 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-primary/40 disabled:text-text-inverse/70"
           >
-            {aliasLoading ? 'Saving…' : 'Save Alias'}
+            {aliasLoading ? 'Saving…' : 'Save Nickname'}
           </button>
         </form>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
@@ -628,7 +636,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
             disabled={!identity || !aliasBoardId || fetchingAlias}
             className="rounded-full border border-border px-3 py-1 uppercase tracking-[2px] transition hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {fetchingAlias ? 'Fetching…' : 'Refresh Alias'}
+            {fetchingAlias ? 'Fetching…' : 'Refresh Nickname'}
           </button>
           {hydratedAlias && (
             <span className="rounded bg-background px-2 py-1 font-mono text-[11px] text-text-secondary">{hydratedAlias.alias}</span>
@@ -654,7 +662,7 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
                 onClick={() => {
                   setAliasValue(suggestion);
                   setAliasStatus(null);
-                  addToast({ title: 'Alias suggestion applied', description: suggestion });
+                  addToast({ title: 'Nickname suggestion applied', description: suggestion });
                 }}
                 className="rounded-full border border-border px-3 py-1 transition hover:border-primary hover:text-primary"
               >
@@ -666,9 +674,9 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
       </section>
 
       <section className="rounded-xl border border-border bg-surface p-6">
-        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Saved Aliases</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-[3px] text-text-tertiary">Saved Nicknames</h2>
         {aliasEntries.length === 0 && (
-          <p className="mt-3 text-xs text-text-secondary">No aliases cached yet. Register one above to populate this list.</p>
+          <p className="mt-3 text-xs text-text-secondary">No nicknames cached yet. Register one above to populate this list.</p>
         )}
         {aliasEntries.length > 0 && (
           <ul className="mt-3 space-y-2 text-xs text-text-secondary">
@@ -696,6 +704,6 @@ export default function IdentityPanel({ workerBaseUrl: baseUrl }: IdentityPanelP
           </ul>
         )}
       </section>
-    </div>
+    </div >
   );
 }

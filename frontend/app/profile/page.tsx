@@ -144,16 +144,38 @@ export default function ProfilePage() {
         />
 
         {!canManageProfile ? (
-          <div className="rounded-2xl border border-border/70 bg-surface-raised/80 p-6 text-sm text-text-secondary">
-            <p className="font-medium text-text-primary">Create a pseudonym to unlock your profile.</p>
-            <p className="mt-2">Once registered, you can set board-specific aliases and track your influence.</p>
-            <button
-              type="button"
-              onClick={() => router.push('/')}
-              className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-light"
-            >
-              Explore boards
-            </button>
+          <div className="rounded-2xl border border-primary/30 bg-primary/5 p-6 text-sm">
+            <p className="text-lg font-semibold text-text-primary">Welcome to Board Rooms!</p>
+            <p className="mt-2 text-text-secondary">Create your campus identity to get started. It takes less than 30 seconds.</p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const identitySection = document.getElementById('identity');
+                  if (identitySection) {
+                    identitySection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    // Add a subtle highlight animation
+                    identitySection.classList.add('ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-background');
+                    setTimeout(() => {
+                      identitySection.classList.remove('ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-background');
+                    }, 2000);
+                  }
+                }}
+                className="inline-flex items-center gap-2 rounded-full bg-primary px-6 py-2.5 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-primary-dark"
+              >
+                Create Your Identity →
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push('/')}
+                className="inline-flex items-center gap-2 rounded-full border border-border px-4 py-2 text-xs font-semibold uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
+              >
+                Or Explore Boards First
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-text-tertiary">
+              ↓ Scroll down to create your identity and choose a pseudonym
+            </p>
           </div>
         ) : (
           <div className="space-y-8">

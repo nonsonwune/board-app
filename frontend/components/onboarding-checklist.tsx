@@ -42,7 +42,7 @@ export default function OnboardingChecklist() {
 
   const verifyComplete = Boolean(identity?.id && session?.token);
   const aliasComplete = aliasCount > 0;
-  const boardComplete = joinedBoard;
+  const boardComplete = joinedBoard && verifyComplete;
   const allComplete = verifyComplete && aliasComplete && boardComplete;
 
   useEffect(() => {
@@ -70,28 +70,28 @@ export default function OnboardingChecklist() {
     () => [
       {
         id: 'verify',
-        label: 'Confirm your profile',
+        label: 'Create your identity',
         description: verifyComplete
-          ? 'Identity confirmed. You can post across campus boards.'
-          : 'Confirm your profile to unlock the student-only space.',
-        href: '/profile',
+          ? '✓ Done! You can now post and react on all boards.'
+          : 'Choose a pseudonym to join your campus community. (30 seconds)',
+        href: '/profile#identity',
         complete: verifyComplete
       },
       {
         id: 'alias',
-        label: 'Choose an on-campus alias',
+        label: 'Set your board nickname',
         description: aliasComplete
-          ? 'Alias ready. Classmates will recognize you on each board.'
-          : 'Pick an alias so classmates know it is really you.',
+          ? `✓ Nice! Set on ${aliasCount} board${aliasCount === 1 ? '' : 's'}.`
+          : 'Optional: Add a nickname for each board you join.',
         href: '/profile#aliases',
         complete: aliasComplete
       },
       {
         id: 'board',
-        label: 'Join your first board',
+        label: 'Join a board',
         description: boardComplete
-          ? 'Board joined. You are tuned into live campus drops.'
-          : 'Jump into a board feed to see live updates from students.',
+          ? '✓ You\u0027re in! Start posting and reacting to classmates.'
+          : 'Browse boards and join one near you to see what\u0027s happening.',
         href: '/#boards',
         complete: boardComplete
       }
@@ -100,18 +100,39 @@ export default function OnboardingChecklist() {
   );
 
   if (!open) {
+    if (snoozed && !allComplete) {
+      return (
+        <div className="fixed bottom-20 right-4 z-40 md:bottom-6">
+          <button
+            type="button"
+            onClick={() => {
+              setSnoozeFlag(false);
+              setSnoozed(false);
+              setOpen(true);
+            }}
+            className="flex items-center gap-2 rounded-full border border-primary/20 bg-surface-raised px-4 py-2 shadow-lg transition hover:border-primary hover:text-primary"
+          >
+            <div className="relative h-3 w-3">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-primary" />
+            </div>
+            <span className="text-xs font-semibold uppercase tracking-[1.5px] text-text-secondary">Finish Setup</span>
+          </button>
+        </div>
+      );
+    }
     return null;
   }
 
   return (
-    <div className="fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
+    <div className="fixed inset-x-0 bottom-20 z-40 flex justify-center px-4 md:bottom-6">
       <div className="w-full max-w-xl rounded-2xl border border-border bg-background p-6 shadow-xl">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
             <p className="text-xs uppercase tracking-[3px] text-text-tertiary">Getting started</p>
-            <h2 className="text-2xl font-semibold text-text-primary">Campus onboarding checklist</h2>
+            <h2 className="text-2xl font-semibold text-text-primary">Get the most out of Board Rooms</h2>
             <p className="text-sm text-text-secondary">
-              Complete these steps to settle into the campus-only boards experience.
+              Complete these quick steps to start connecting with your campus.
             </p>
           </div>
           <button
@@ -123,7 +144,7 @@ export default function OnboardingChecklist() {
             }}
             className="rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
           >
-            Remind me later
+            Minimize
           </button>
         </div>
 
@@ -140,9 +161,8 @@ export default function OnboardingChecklist() {
           {tasks.map(task => (
             <li key={task.id} className="flex items-start gap-4">
               <span
-                className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border text-sm font-semibold ${
-                  task.complete ? 'border-primary bg-primary text-text-inverse' : 'border-border text-text-tertiary'
-                }`}
+                className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border text-sm font-semibold ${task.complete ? 'border-primary bg-primary text-text-inverse' : 'border-border text-text-tertiary'
+                  }`}
                 aria-hidden
               >
                 {task.complete ? <Check size={16} /> : tasks.findIndex(t => t.id === task.id) + 1}

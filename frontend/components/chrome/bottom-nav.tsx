@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Search, User, Users } from "lucide-react";
+import { Bell, Home, Search, User, Users } from "lucide-react";
 import type { ComponentType } from "react";
 
 interface NavItem {
@@ -14,8 +14,8 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Home", icon: Home },
   { href: "/following", label: "Following", icon: Users },
-  { href: "/search", label: "Search", icon: Search },
-  { href: "/profile", label: "You", icon: User }
+  { href: "/notifications", label: "Alerts", icon: Bell },
+  { href: "/profile", label: "Profile", icon: User }
 ];
 
 function isActivePath(pathname: string | null, href: string) {
@@ -30,29 +30,21 @@ export default function BottomNav() {
   const pathname = usePathname();
 
   return (
-    <nav
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-surface/95 backdrop-blur supports-[backdrop-filter]:bg-surface/80 md:hidden"
-      aria-label="Primary navigation"
-    >
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-2.5 sm:px-6">
-        {NAV_ITEMS.map(item => {
-          const active = isActivePath(pathname, item.href);
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex flex-col items-center gap-1 rounded-full px-3 py-2 text-xs font-medium uppercase tracking-[1.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
-                active ? "text-primary" : "text-text-tertiary hover:text-text-secondary"
+    <nav className="glass fixed bottom-0 left-0 right-0 z-50 flex h-16 items-center justify-around px-2 pb-safe md:hidden">
+      {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+        const isActive = pathname === href;
+        return (
+          <Link
+            key={href}
+            href={href}
+            className={`flex flex-col items-center justify-center gap-1 rounded-xl px-4 py-2 transition-all ${isActive ? 'text-primary' : 'text-text-tertiary hover:text-text-secondary'
               }`}
-            >
-              <Icon className="h-5 w-5" aria-hidden />
-              <span>{item.label}</span>
-            </Link>
-          );
-        })}
-      </div>
-      <div className="h-[calc(env(safe-area-inset-bottom,_0px))]" />
+          >
+            <Icon className={`h-5 w-5 ${isActive ? 'stroke-[2.5px]' : 'stroke-2'}`} />
+            <span className="text-[10px] font-medium">{label}</span>
+          </Link>
+        );
+      })}
     </nav>
   );
 }

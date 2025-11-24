@@ -143,11 +143,33 @@ html {
 body {
   min-height: 100vh;
   margin: 0;
-  background-color: var(--ui-color-background);
+  /* Mesh Gradient Background */
+  background-color: var(--ui-color-paper);
+  background-image: 
+    radial-gradient(at 0% 0%, color-mix(in srgb, var(--ui-color-primary-light) 15%, transparent) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, color-mix(in srgb, var(--ui-color-secondary) 15%, transparent) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, color-mix(in srgb, var(--ui-color-primary-light) 10%, transparent) 0px, transparent 50%);
+  background-attachment: fixed;
   color: var(--ui-color-text-primary);
   font-family: var(--ui-font-sans);
   line-height: 1.5;
   letter-spacing: -0.01em;
+}
+
+/* Glassmorphism Utilities */
+@utility glass {
+  background-color: color-mix(in srgb, var(--ui-color-paper) 70%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-color-ink) 5%, transparent);
+}
+
+@utility glass-panel {
+  background-color: color-mix(in srgb, var(--ui-color-surface) 60%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid color-mix(in srgb, var(--ui-color-ink) 8%, transparent);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
 }
 
 a {

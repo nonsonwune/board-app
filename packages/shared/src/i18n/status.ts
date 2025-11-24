@@ -52,31 +52,31 @@ export interface StatusMessages {
 
 export const statusMessages: StatusMessages = {
   alias: {
-    requireIdentity: 'Register your campus identity before setting an alias.',
-    requireSession: 'Session expired. Refresh to keep your alias live.',
-    boardRequired: 'Enter the board slug to choose the right alias.',
-    aliasRequired: 'Alias is required. Choose something classmates will recognize.',
-    saving: 'Saving your campus alias…',
-    saved: ({ boardId, alias }) => `Alias locked for ${boardId}: ${alias}.`,
-    fetching: 'Fetching your saved alias…',
+    requireIdentity: 'Create your profile before setting a nickname.',
+    requireSession: 'Session expired. Refresh to keep your nickname live.',
+    boardRequired: 'Enter the board name to choose the right nickname.',
+    aliasRequired: 'Nickname is required. Choose something classmates will recognize.',
+    saving: 'Saving your nickname…',
+    saved: ({ boardId, alias }) => `Nickname saved for ${boardId}: ${alias}.`,
+    fetching: 'Fetching your saved nickname…',
     fetched: ({ boardId, alias }) =>
-      alias ? `Alias on ${boardId} is set to ${alias}.` : `No alias saved on ${boardId} yet.`,
-    cleared: ({ boardId }) => `Alias cleared on ${boardId}.`,
-    conflict: 'That alias is already in use. Try a different variation.',
-    error: 'We ran into an issue saving your alias. Please try again.'
+      alias ? `Nickname on ${boardId} is set to ${alias}.` : `No nickname saved on ${boardId} yet.`,
+    cleared: ({ boardId }) => `Nickname cleared on ${boardId}.`,
+    conflict: 'That nickname is already in use. Try a different variation.',
+    error: 'We ran into an issue saving your nickname. Please try again.'
   },
   session: {
     refreshing: 'Refreshing your campus session…',
     restored: ({ expiresAt }) => `Session restored. Next refresh ${expiresAt.toLocaleString()}.`,
-    expired: 'Session expired. Re-register your identity to stay verified.',
+    expired: 'Session expired. Update your profile to stay verified.',
     error: 'We could not refresh your session. Try again in a moment.'
   },
   access: {
-    linking: 'Checking for an Access identity…',
-    linked: ({ pseudonym }) => `Access identity linked to ${pseudonym}.`,
-    unavailable: 'No Access identity detected. Make sure you are signed in with your campus SSO.',
+    linking: 'Checking for an Access profile…',
+    linked: ({ pseudonym }) => `Access profile linked to ${pseudonym}.`,
+    unavailable: 'No Access profile detected. Make sure you are signed in with your campus SSO.',
     forbidden: 'Access token is invalid or expired. Reauthenticate with campus SSO.',
-    error: 'We could not link your Access identity right now.'
+    error: 'We could not link your Access profile right now.'
   }
 };
 

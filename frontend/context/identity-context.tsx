@@ -93,6 +93,13 @@ export function IdentityProvider({ children }: { children: ReactNode }) {
 
     // 3. Verify session with backend (HttpOnly cookie)
     const verifySession = async () => {
+      // Optimization: if we don't have a stored identity, we likely aren't logged in.
+      // Skipping the request avoids 401 errors in the console for guests.
+      if (!storedIdentity) {
+        setHydrated(true);
+        return;
+      }
+
       try {
         const res = await fetch(`${DEFAULT_WORKER_BASE_URL}/identity/session`, {
           method: 'GET',

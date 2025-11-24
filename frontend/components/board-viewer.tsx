@@ -398,7 +398,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
       label: 'Post',
       onPress: handleFabPress,
       disabled: !canCompose,
-      tooltip: canCompose ? 'Share an update with the board' : 'Register an identity to post',
+      tooltip: canCompose ? 'Share an update with the board' : 'Create a profile to post',
       visible: true,
       variant: status === 'connected' ? 'live' : 'primary'
     });
@@ -550,7 +550,7 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
     },
     [sessionToken]
   );
-  const registerLabel = effectiveIdentity ? 'Re-register' : 'Register';
+  const registerLabel = effectiveIdentity ? 'Update Profile' : 'Create Profile';
 
   const raiseForStatus = useCallback((res: Response, payload: unknown, fallback: string) => {
     if (res.ok) return;
@@ -1464,11 +1464,11 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 <span className="text-[10px] text-text-tertiary">#{effectiveIdentity.id.slice(0, 6)}</span>
               </span>
             ) : (
-              <span>Register an identity to post as yourself.</span>
+              <span>Create a profile to post as yourself.</span>
             )}
             {effectiveIdentity && (
               <span className="flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-text-secondary">
-                Alias: <strong className="text-text-primary">{alias?.alias ?? boardAliasLookup.get(effectiveIdentity.id) ?? '—'}</strong>
+                Nickname: <strong className="text-text-primary">{alias?.alias ?? boardAliasLookup.get(effectiveIdentity.id) ?? '—'}</strong>
               </span>
             )}
             {effectiveIdentity && (
@@ -1480,14 +1480,14 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                 }}
                 className="rounded-md border border-border px-2 py-1 text-[11px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
               >
-                Edit alias
+                Edit nickname
               </button>
             )}
             <Link
               href="/profile"
               className="rounded-md border border-border px-2 py-1 text-[11px] uppercase tracking-[2px] text-text-secondary transition hover:border-primary hover:text-primary"
             >
-              Manage Identity →
+              Manage Profile →
             </Link>
           </div>
         </header>
@@ -1524,13 +1524,13 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
           {showDevTools && (
             <>
               <form onSubmit={handleRegisterIdentity} className="mb-8 rounded-xl border border-border bg-surface p-4 shadow-md">
-                <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Register Identity</h2>
+                <h2 className="text-sm font-semibold uppercase tracking-[3px] text-text-secondary">Create Profile</h2>
                 <p className="mt-2 text-xs text-text-tertiary">
-                  Identities map to pseudonyms used across boards. Reactions require a user ID.
+                  Profiles map to usernames used across boards. Reactions require a user ID.
                 </p>
                 <div className="mt-4 flex flex-wrap items-end gap-4">
                   <label className="flex flex-1 min-w-[220px] flex-col gap-2 text-xs uppercase tracking-[2px] text-text-tertiary">
-                    Pseudonym
+                    Username
                     <input
                       name="pseudonym"
                       placeholder="e.g. CampusScout"
@@ -1543,26 +1543,26 @@ export default function BoardViewer({ boardId }: BoardViewerProps) {
                     disabled={identityLoading}
                     className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-text-inverse transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:bg-border disabled:text-text-secondary"
                   >
-                    {identityLoading ? 'Registering…' : registerLabel}
+                    {identityLoading ? 'Creating…' : registerLabel}
                   </button>
                 </div>
                 {effectiveIdentity && (
                   <div className="mt-3 rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
                     <p>
-                      Active identity:{' '}
+                      Active profile:{' '}
                       <span className="font-semibold text-text-primary">{effectiveIdentity.pseudonym}</span>{' '}
                       <code className="ml-1 rounded bg-background px-2 py-1 text-[11px] text-text-secondary">{effectiveIdentity.id}</code>
                     </p>
                     {alias && (
                       <p className="mt-2 text-[11px] text-text-tertiary">
-                        Board alias: <span className="font-semibold text-text-primary">{alias.alias}</span>
+                        Board nickname: <span className="font-semibold text-text-primary">{alias.alias}</span>
                       </p>
                     )}
                     <Link
                       href="/profile"
                       className="mt-2 inline-flex items-center gap-1 text-[11px] uppercase tracking-[2px] text-primary transition hover:text-primary"
                     >
-                      Manage identity & sessions →
+                      Manage profile & sessions →
                     </Link>
                   </div>
                 )}

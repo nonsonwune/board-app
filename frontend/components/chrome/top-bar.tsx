@@ -111,6 +111,8 @@ function ConnectionIndicator({ state }: { state: NonNullable<TopBarState["connec
   );
 }
 
+import Breadcrumbs from "./breadcrumbs";
+
 export function TopBar({ state }: TopBarProps) {
   if (state.show === false) return null;
 
@@ -119,8 +121,9 @@ export function TopBar({ state }: TopBarProps) {
   const hasConnection = Boolean(state.connection);
 
   return (
-    <header className="sticky top-0 z-40 border-b border-border/60 bg-surface/90 backdrop-blur supports-[backdrop-filter]:bg-surface/70">
+    <header className="glass sticky top-0 z-40 border-b border-border/60 bg-surface/90 backdrop-blur supports-[backdrop-filter]:bg-surface/70">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-4 py-3 sm:px-6">
+        <Breadcrumbs />
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             {hasBoard ? (

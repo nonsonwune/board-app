@@ -190,21 +190,21 @@ export default function BoardPreview() {
     () => [
       {
         id: 'verify',
-        label: 'Profile verification',
+        label: 'Profile setup',
         description: verifyComplete
-          ? 'Identity confirmed. You can post across campus boards.'
+          ? 'Profile ready. You can post across campus boards.'
           : hasIdentity
-            ? 'Refresh your session to stay connected across boards.'
-            : 'Verify once to unlock the student-only space.',
+            ? 'Refresh your session to stay connected.'
+            : 'Create a profile to unlock student-only spaces.',
         complete: verifyComplete,
         href: '/profile'
       },
       {
         id: 'alias',
-        label: 'Board aliases',
+        label: 'Board nicknames',
         description: aliasComplete
-          ? `Aliases set for ${aliasCount} board${aliasCount === 1 ? '' : 's'}.`
-          : 'Choose aliases so classmates recognize you.',
+          ? `Nicknames set for ${aliasCount} board${aliasCount === 1 ? '' : 's'}.`
+          : 'Choose a nickname so classmates recognize you.',
         complete: aliasComplete,
         href: '/profile#aliases'
       },
@@ -235,13 +235,13 @@ export default function BoardPreview() {
               </span>
               <h1 className="text-4xl font-semibold leading-tight sm:text-5xl">
                 {identity?.pseudonym
-                  ? 'Pick up where you left off on campus boards.'
-                  : 'Finish getting ready to post with your campus identity.'}
+                  ? 'Pick up where you left off.'
+                  : 'You’re almost ready to join the conversation.'}
               </h1>
               <p className="max-w-2xl text-lg text-text-secondary">
                 {identity?.pseudonym
-                  ? 'Dive into the boards you follow, keep your alias current, and track what’s trending right now.'
-                  : 'Complete verification, set aliases, and join a board to see what classmates are talking about in real time.'}
+                  ? 'Check your favorite boards, update your nickname, and see what’s happening on campus.'
+                  : 'Create your profile, pick a nickname, and join a board to connect with classmates.'}
               </p>
               <div className="flex flex-wrap gap-3">
                 <Link
@@ -288,13 +288,13 @@ export default function BoardPreview() {
           <div className="mx-auto flex max-w-5xl flex-col gap-10 px-6 py-20 sm:py-24">
             <div className="space-y-6">
               <span className="inline-flex items-center gap-2 text-xs uppercase tracking-[3px] text-text-inverse/70">
-                Verified campus-only network
+                Student-only network
               </span>
               <h1 className="text-4xl font-semibold leading-tight sm:text-5xl">
-                Campus Boards, Closed to Everyone Else.
+                Campus Boards. No Outsiders.
               </h1>
               <p className="max-w-2xl text-lg text-text-inverse/80">
-                Verified students share updates, organize projects, and stay in the loop without outside noise. Every board uses lightweight identity checks and real-time moderation.
+                Connect with your campus in a verified, student-only space. Share updates, find events, and chat without the noise of public social media.
               </p>
               <div className="flex flex-wrap gap-3">
                 <Link
@@ -307,7 +307,7 @@ export default function BoardPreview() {
                   href="#boards"
                   className="inline-flex items-center justify-center gap-2 rounded-full border border-text-inverse/40 px-6 py-2 text-sm font-semibold uppercase tracking-[2px] text-text-inverse transition hover:bg-text-inverse hover:text-ink"
                 >
-                  Browse live boards
+                  Browse boards
                 </Link>
               </div>
             </div>
@@ -315,15 +315,15 @@ export default function BoardPreview() {
             <dl className="grid gap-6 border-t border-text-inverse/20 pt-8 text-sm text-text-inverse/80 sm:grid-cols-3">
               <div className="space-y-2">
                 <dt className="uppercase tracking-[2px] text-text-inverse">Verify</dt>
-                <dd>Confirm your profile to enter a campus-only board. No outside accounts or anonymous drop-ins.</dd>
+                <dd>Create a profile to join. No bots, no randoms.</dd>
               </div>
               <div className="space-y-2">
-                <dt className="uppercase tracking-[2px] text-text-inverse">Choose Your Alias</dt>
-                <dd>Pick a trusted alias per board so classmates know it’s really you without exposing identity.</dd>
+                <dt className="uppercase tracking-[2px] text-text-inverse">Pick a Nickname</dt>
+                <dd>Choose a unique nickname for each board. Be yourself, or be anon.</dd>
               </div>
               <div className="space-y-2">
-                <dt className="uppercase tracking-[2px] text-text-inverse">Stay Live</dt>
-                <dd>Session refresh keeps you connected through the semester with realtime alerts and posts.</dd>
+                <dt className="uppercase tracking-[2px] text-text-inverse">Stay Connected</dt>
+                <dd>See what's happening right now with live posts and alerts.</dd>
               </div>
             </dl>
           </div>
@@ -333,23 +333,23 @@ export default function BoardPreview() {
       <section className="border-b border-border/60 bg-background">
         <div className="mx-auto flex max-w-5xl flex-col gap-6 px-6 py-12 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-xl font-semibold">Onboarding nudges keep new students on track.</h2>
+            <h2 className="text-xl font-semibold">Get started in seconds.</h2>
             <p className="mt-2 max-w-xl text-sm text-text-secondary">
-              We guide first-time signups to verify, set their campus alias, and join a board in under a minute. Subtle prompts disappear once the checklist is complete.
+              We guide you through a quick setup so you can start posting immediately.
             </p>
           </div>
           <ul className="flex flex-col gap-2 text-sm text-text-secondary">
             <li className="flex items-center gap-2">
               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-primary text-primary">1</span>
-              Confirm your profile
+              Create your profile
             </li>
             <li className="flex items-center gap-2">
               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-primary text-primary">2</span>
-              Choose an on-campus alias
+              Pick a nickname
             </li>
             <li className="flex items-center gap-2">
               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-primary text-primary">3</span>
-              Join your first board
+              Join a board
             </li>
           </ul>
         </div>
